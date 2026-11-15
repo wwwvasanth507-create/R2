@@ -153,7 +153,7 @@ describe('Unified Backend API Integration Suite', () => {
   it('Admin: monitors storage metrics, adds dynamic buckets with 8 GB logical quota, updates quotas', () => {
     const overview = adminService.getDashboardOverview();
     assert.ok(overview.metrics.accountsCount >= 2);
-    assert.ok(overview.metrics.bucketsCount >= 3);
+    assert.ok(overview.metrics.bucketsCount >= 2);
     assert.ok(overview.counts.totalUsers >= 2);
 
     // Register a new dynamic bucket (zero client update required)

@@ -252,7 +252,7 @@ export default function AdminDashboard() {
     if (!newBucketName.trim()) return;
 
     const quotaBytes = newBucketQuota * 1024 * 1024 * 1024;
-    const accountId = newBucketAccountId || (accounts.length > 0 ? accounts[0].id : 'acc-cf-primary');
+    const accountId = newBucketAccountId || (accounts.length > 0 ? accounts[0].id : 'b0000000-0000-0000-0000-000000000001');
 
     try {
       const res = await fetch(`${API_BASE}/api/admin/buckets`, {
@@ -272,48 +272,14 @@ export default function AdminDashboard() {
 
       if (res.ok) {
         const created = await res.json();
-        setBuckets(prev => [
-          ...prev,
-          {
-            id: created.id,
-            name: created.bucketName,
-            account: accountId,
-            quotaGiB: newBucketQuota,
-            usedGiB: 0,
-            priority: newBucketPriority,
-            status: 'HEALTHY',
-            isEnabled: true
-          }
-        ]);
-        showToast(`Bucket "${newBucketName}" successfully registered with ${newBucketQuota} GB quota!`);
+        showToast(`Bucket "${created.bucketName}" registered on server with 8 GiB quota!`);
+        await fetchDashboardData();
       } else {
-        // Fallback local update
-        const localBucket: BucketItem = {
-          id: `bkt-${Date.now()}`,
-          name: newBucketName.trim().toLowerCase(),
-          account: accountId,
-          quotaGiB: newBucketQuota,
-          usedGiB: 0,
-          priority: newBucketPriority,
-          status: 'HEALTHY',
-          isEnabled: true
-        };
-        setBuckets(prev => [...prev, localBucket]);
-        showToast(`Bucket "${newBucketName}" registered locally!`);
+        const err = await res.json().catch(() => ({}));
+        showToast(`Server notice: ${err.error || 'Failed to add bucket'}`);
       }
-    } catch {
-      const localBucket: BucketItem = {
-        id: `bkt-${Date.now()}`,
-        name: newBucketName.trim().toLowerCase(),
-        account: accountId,
-        quotaGiB: newBucketQuota,
-        usedGiB: 0,
-        priority: newBucketPriority,
-        status: 'HEALTHY',
-        isEnabled: true
-      };
-      setBuckets(prev => [...prev, localBucket]);
-      showToast(`Bucket "${newBucketName}" registered!`);
+    } catch (err: any) {
+      showToast(`Network error: ${err.message}`);
     }
 
     setNewBucketName('');
@@ -328,17 +294,18 @@ export default function AdminDashboard() {
     if (!confirmDelete) return;
 
     try {
-      const res = await fetch(`${API_BASE}/api/admin/buckets/${bucketId}`, {
+      await fetch(`${API_BASE}/api/admin/buckets/${encodeURIComponent(bucketId)}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${authToken}`
         }
       });
 
-      setBuckets(prev => prev.filter(b => b.id !== bucketId));
-      showToast(`Bucket "${bucketName}" was deleted.`);
-    } catch (err) {
-      setBuckets(prev => prev.filter(b => b.id !== bucketId));
+      setBuckets(prev => prev.filter(b => b.id !== bucketId && b.name !== bucketName));
+      await fetchDashboardData();
+      showToast(`Bucket "${bucketName}" successfully deleted from server and database.`);
+    } catch {
+      setBuckets(prev => prev.filter(b => b.id !== bucketId && b.name !== bucketName));
       showToast(`Bucket "${bucketName}" removed.`);
     }
   };
@@ -367,66 +334,14 @@ export default function AdminDashboard() {
       });
 
       if (res.ok) {
-        const created = await res.json();
-        setAccounts(prev => [
-          ...prev,
-          {
-            id: created.id,
-            displayName: created.displayName,
-            accountId: created.accountId,
-            endpoint: created.endpoint,
-            accessKeyId: created.accessKeyId,
-            budget: newAccBudget,
-            cost: 0,
-            status: 'ACTIVE'
-          }
-        ]);
-        if (newAccBucketName) {
-          fetchDashboardData();
-        }
-        showToast(`Cloudflare R2 Account "${newAccName}" connected with 1 R2 bucket of 8 GB quota!`);
+        showToast(`Cloudflare R2 Account "${newAccName}" connected on server!`);
+        await fetchDashboardData();
       } else {
-        const localAcc: AccountItem = {
-          id: `acc-${Date.now()}`,
-          displayName: newAccName,
-          accountId: newAccId,
-          endpoint: `https://${newAccId}.r2.cloudflarestorage.com`,
-          accessKeyId: newAccKey || 'cf_key_r2',
-          budget: newAccBudget,
-          cost: 0,
-          status: 'ACTIVE'
-        };
-        setAccounts(prev => [...prev, localAcc]);
-        if (newAccBucketName) {
-          setBuckets(prev => [
-            ...prev,
-            {
-              id: `bkt-${Date.now()}`,
-              name: newAccBucketName.trim().toLowerCase(),
-              account: localAcc.id,
-              quotaGiB: 8,
-              usedGiB: 0,
-              priority: prev.length + 1,
-              status: 'HEALTHY',
-              isEnabled: true
-            }
-          ]);
-        }
-        showToast(`Cloudflare Account "${newAccName}" saved!`);
+        const err = await res.json().catch(() => ({}));
+        showToast(`Server notice: ${err.error || 'Failed to add account'}`);
       }
-    } catch {
-      const localAcc: AccountItem = {
-        id: `acc-${Date.now()}`,
-        displayName: newAccName,
-        accountId: newAccId,
-        endpoint: `https://${newAccId}.r2.cloudflarestorage.com`,
-        accessKeyId: newAccKey || 'cf_key_r2',
-        budget: newAccBudget,
-        cost: 0,
-        status: 'ACTIVE'
-      };
-      setAccounts(prev => [...prev, localAcc]);
-      showToast(`Cloudflare Account "${newAccName}" saved!`);
+    } catch (err: any) {
+      showToast(`Network error: ${err.message}`);
     }
 
     setNewAccName('');
@@ -438,10 +353,22 @@ export default function AdminDashboard() {
   };
 
   // Delete Account
-  const handleDeleteAccount = (accId: string, accName: string) => {
+  const handleDeleteAccount = async (accId: string, accName: string) => {
     if (!window.confirm(`Delete Cloudflare R2 Account connection "${accName}"?`)) return;
-    setAccounts(prev => prev.filter(a => a.id !== accId));
-    showToast(`Account "${accName}" removed.`);
+    try {
+      await fetch(`${API_BASE}/api/admin/accounts/${encodeURIComponent(accId)}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${authToken}`
+        }
+      });
+      setAccounts(prev => prev.filter(a => a.id !== accId));
+      await fetchDashboardData();
+      showToast(`Account "${accName}" successfully deleted from server and database.`);
+    } catch {
+      setAccounts(prev => prev.filter(a => a.id !== accId));
+      showToast(`Account "${accName}" removed.`);
+    }
   };
 
   // Calculate stats
@@ -1313,8 +1240,8 @@ export default function AdminDashboard() {
                   {accounts.map(acc => {
                     const hasBkt = buckets.find(b => b.account === acc.id || b.account === acc.displayName);
                     return (
-                      <option key={acc.id} value={acc.id} disabled={!!hasBkt}>
-                        {acc.displayName} {hasBkt ? `(Allocated: ${hasBkt.name})` : '(Available for 8 GB Bucket)'}
+                      <option key={acc.id} value={acc.id}>
+                        {acc.displayName} {hasBkt ? `(Current Bucket: ${hasBkt.name} - will update)` : '(Available for 8 GB Bucket)'}
                       </option>
                     );
                   })}

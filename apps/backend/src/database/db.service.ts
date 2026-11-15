@@ -88,8 +88,59 @@ export class DatabaseService {
       this.pgPool.on('error', (err) => {
         console.warn('PostgreSQL pool background notice:', err.message);
       });
+      this.loadStorageFromPostgres().catch(console.warn);
     } catch (err) {
       console.warn('PostgreSQL pool initialization failed, using in-memory store:', err);
+    }
+  }
+
+  public async loadStorageFromPostgres(): Promise<void> {
+    if (!this.pgPool) return;
+    try {
+      const accRes = await this.pgPool.query('SELECT * FROM storage_accounts');
+      for (const row of accRes.rows) {
+        const acc: IStorageAccount & { secretAccessKey: string } = {
+          id: row.id,
+          displayName: row.display_name,
+          accountId: row.account_id,
+          endpoint: row.endpoint,
+          accessKeyId: row.access_key_id,
+          secretAccessKey: row.secret_access_key_encrypted || 'cf_secret_prod',
+          secretAccessKeyMasked: (row.secret_access_key_encrypted || 'cf_secret_prod').substring(0, 6) + '...prod',
+          status: (row.status as StorageAccountStatus) || StorageAccountStatus.ACTIVE,
+          monthlyBudgetUsd: parseFloat(row.monthly_budget_usd || '100'),
+          currentEstimatedCostUsd: parseFloat(row.current_cost_usd || '0'),
+          createdAt: row.created_at || new Date(),
+          updatedAt: row.updated_at || new Date()
+        };
+        this.storageAccounts.set(acc.id, acc);
+      }
+
+      const bktRes = await this.pgPool.query('SELECT * FROM storage_buckets');
+      for (const row of bktRes.rows) {
+        const quota = Number(row.logical_quota_bytes || DEFAULT_LOGICAL_QUOTA_BYTES);
+        const used = Number(row.used_storage_bytes || 0);
+        const bkt: IStorageBucket = {
+          id: row.id,
+          bucketName: row.bucket_name,
+          storageAccountId: row.storage_account_id,
+          region: row.region || 'auto',
+          logicalQuotaBytes: quota,
+          usedStorageBytes: used,
+          reservedStorageBytes: Number(row.reserved_storage_bytes || 0),
+          availableStorageBytes: Math.max(0, quota - used),
+          priority: row.priority || 1,
+          healthStatus: (row.health_status as BucketHealthStatus) || BucketHealthStatus.HEALTHY,
+          isEnabled: row.is_enabled !== false,
+          objectCount: Number(row.object_count || 0),
+          createdAt: row.created_at || new Date(),
+          updatedAt: row.updated_at || new Date()
+        };
+        this.storageBuckets.set(bkt.id, bkt);
+      }
+      console.log(`[POSTGRES] Synchronized ${accRes.rows.length} storage accounts and ${bktRes.rows.length} buckets from database.`);
+    } catch (err: any) {
+      console.warn('[POSTGRES] Storage synchronization notice:', err.message);
     }
   }
 

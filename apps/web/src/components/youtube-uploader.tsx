@@ -165,7 +165,7 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
   };
 
   // Start Real Direct-to-R2 Upload
-  const handleStartUpload = () => {
+  const handleStartUpload = async () => {
     if (!file) return;
     if (!title.trim()) {
       setErrorMessage('Please enter a title for your video.');
@@ -176,34 +176,50 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     setStep('uploading');
     setUploadPercent(0);
 
+    // 1. If thumbnail is a base64 string, upload it to get a clean short URL
+    let finalThumbnailUrl = '';
+    if (thumbnailUrl && thumbnailUrl.startsWith('data:image/')) {
+      try {
+        const thumbRes = await fetch(`${apiBase}/api/videos/upload-thumbnail`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataUrl: thumbnailUrl })
+        });
+        if (thumbRes.ok) {
+          const thumbData = await thumbRes.json();
+          finalThumbnailUrl = thumbData.thumbnailUrl;
+        }
+      } catch (err) {
+        console.warn('Thumbnail upload notice:', err);
+      }
+    } else if (thumbnailUrl && !thumbnailUrl.startsWith('data:image/')) {
+      finalThumbnailUrl = thumbnailUrl;
+    }
+
+    if (!finalThumbnailUrl) {
+      finalThumbnailUrl = 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800';
+    }
+
+    // 2. Build Query Parameters for all metadata (safely avoiding any oversized HTTP headers)
+    const queryParams = new URLSearchParams({
+      title: title.trim(),
+      description: description.trim(),
+      category: category,
+      tags: tags,
+      isShort: String(isShort),
+      visibility: visibility,
+      filename: file.name,
+      duration: String(Math.round(videoDuration || 120)),
+      thumbnailUrl: finalThumbnailUrl
+    });
+
     const xhr = new XMLHttpRequest();
     xhrRef.current = xhr;
 
-    const queryParams = new URLSearchParams({
-      title: title.trim(),
-      category: category,
-      isShort: String(isShort),
-      visibility: visibility,
-      filename: file.name
-    });
-
     xhr.open('POST', `${apiBase}/api/videos/upload?${queryParams.toString()}`);
 
-    // Set request headers
+    // Set ONLY standard small headers (zero header overflow)
     xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
-    xhr.setRequestHeader('x-title', encodeURIComponent(title.trim()));
-    xhr.setRequestHeader('x-description', encodeURIComponent(description.trim()));
-    xhr.setRequestHeader('x-category', encodeURIComponent(category));
-    xhr.setRequestHeader('x-tags', encodeURIComponent(tags));
-    xhr.setRequestHeader('x-filename', encodeURIComponent(file.name));
-    xhr.setRequestHeader('x-duration', String(Math.round(videoDuration || 120)));
-    xhr.setRequestHeader('x-is-short', String(isShort));
-    xhr.setRequestHeader('x-visibility', visibility);
-
-    // Send thumbnail data URL if available and reasonable length
-    if (thumbnailUrl && thumbnailUrl.length < 500000) {
-      xhr.setRequestHeader('x-thumbnail-url', encodeURIComponent(thumbnailUrl));
-    }
 
     // Attach Bearer token if user is signed in
     try {
