@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS storage_buckets (
   last_validated_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
-  CONSTRAINT uq_account_bucket UNIQUE (storage_account_id, bucket_name)
+  CONSTRAINT uq_account_one_bucket UNIQUE (storage_account_id),
+  CONSTRAINT uq_bucket_name UNIQUE (bucket_name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_storage_buckets_priority ON storage_buckets(priority, is_enabled);

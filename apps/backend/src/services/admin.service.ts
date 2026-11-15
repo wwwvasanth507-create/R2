@@ -50,7 +50,7 @@ export class AdminService {
     });
   }
 
-  public async addStorageAccount(dto: CreateStorageAccountDto): Promise<IStorageAccount> {
+  public async addStorageAccount(dto: CreateStorageAccountDto & { bucketName?: string }): Promise<IStorageAccount> {
     const id = `acc-r2-${Date.now()}`;
     const newAccount: IStorageAccount & { secretAccessKey: string } = {
       id,
@@ -71,6 +71,18 @@ export class AdminService {
     // Test connectivity
     const provider = this.storageManager.getProvider(id);
     this.db.storageAccounts.set(id, newAccount);
+
+    // If bucketName is specified, create this Cloudflare account's single 8 GB R2 bucket immediately
+    if (dto.bucketName && dto.bucketName.trim()) {
+      this.addBucket({
+        bucketName: dto.bucketName.trim().toLowerCase(),
+        storageAccountId: id,
+        region: 'auto',
+        logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
+        priority: this.db.storageBuckets.size + 1
+      });
+    }
+
     const { secretAccessKey, ...safeAccount } = newAccount;
     return safeAccount;
   }
@@ -81,8 +93,19 @@ export class AdminService {
   }
 
   public addBucket(dto: CreateStorageBucketDto): IStorageBucket {
+    // Strictly enforce: Exactly ONE R2 bucket per Cloudflare account!
+    const existingForAccount = Array.from(this.db.storageBuckets.values()).find(
+      (b) => b.storageAccountId === dto.storageAccountId
+    );
+    if (existingForAccount) {
+      throw new Error(
+        `Cloudflare account "${dto.storageAccountId}" already has an assigned bucket ("${existingForAccount.bucketName}"). Only 1 R2 bucket of 8 GB quota is allowed per Cloudflare account.`
+      );
+    }
+
     const id = `bkt-${Date.now()}`;
-    const quota = dto.logicalQuotaBytes || DEFAULT_LOGICAL_QUOTA_BYTES; // Defaults to 8 GiB
+    // Strictly enforce 8 GiB quota (8,589,934,592 bytes)
+    const quota = DEFAULT_LOGICAL_QUOTA_BYTES;
 
     const newBucket: IStorageBucket = {
       id,

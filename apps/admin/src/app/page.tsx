@@ -93,6 +93,7 @@ export default function AdminDashboard() {
   const [newAccKey, setNewAccKey] = useState('');
   const [newAccSecret, setNewAccSecret] = useState('');
   const [newAccBudget, setNewAccBudget] = useState(100);
+  const [newAccBucketName, setNewAccBucketName] = useState('');
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -360,7 +361,8 @@ export default function AdminDashboard() {
           endpoint: `https://${newAccId}.r2.cloudflarestorage.com`,
           accessKeyId: newAccKey || 'cf_key_r2',
           secretAccessKey: newAccSecret || 'cf_secret_r2',
-          monthlyBudgetUsd: newAccBudget
+          monthlyBudgetUsd: newAccBudget,
+          bucketName: newAccBucketName ? newAccBucketName.trim().toLowerCase() : undefined
         })
       });
 
@@ -379,7 +381,10 @@ export default function AdminDashboard() {
             status: 'ACTIVE'
           }
         ]);
-        showToast(`Cloudflare R2 Account "${newAccName}" connected successfully!`);
+        if (newAccBucketName) {
+          fetchDashboardData();
+        }
+        showToast(`Cloudflare R2 Account "${newAccName}" connected with 1 R2 bucket of 8 GB quota!`);
       } else {
         const localAcc: AccountItem = {
           id: `acc-${Date.now()}`,
@@ -392,6 +397,21 @@ export default function AdminDashboard() {
           status: 'ACTIVE'
         };
         setAccounts(prev => [...prev, localAcc]);
+        if (newAccBucketName) {
+          setBuckets(prev => [
+            ...prev,
+            {
+              id: `bkt-${Date.now()}`,
+              name: newAccBucketName.trim().toLowerCase(),
+              account: localAcc.id,
+              quotaGiB: 8,
+              usedGiB: 0,
+              priority: prev.length + 1,
+              status: 'HEALTHY',
+              isEnabled: true
+            }
+          ]);
+        }
         showToast(`Cloudflare Account "${newAccName}" saved!`);
       }
     } catch {
@@ -413,6 +433,7 @@ export default function AdminDashboard() {
     setNewAccId('');
     setNewAccKey('');
     setNewAccSecret('');
+    setNewAccBucketName('');
     setShowAddAccountModal(false);
   };
 
@@ -1273,9 +1294,35 @@ export default function AdminDashboard() {
             zIndex: 1000
           }}
         >
-          <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '16px', padding: '28px', width: '440px' }}>
-            <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: 700, color: '#fff' }}>Register R2 Bucket</h3>
+          <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '16px', padding: '28px', width: '460px' }}>
+            <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: 700, color: '#fff' }}>
+              Register R2 Bucket (1 Per Cloudflare Account)
+            </h3>
             <form onSubmit={handleAddBucket}>
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>
+                  Cloudflare Storage Account
+                </label>
+                <select
+                  value={newBucketAccountId}
+                  onChange={(e) => setNewBucketAccountId(e.target.value)}
+                  required
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                >
+                  <option value="">Select Cloudflare Account (1 bucket per account limit)</option>
+                  {accounts.map(acc => {
+                    const hasBkt = buckets.find(b => b.account === acc.id || b.account === acc.displayName);
+                    return (
+                      <option key={acc.id} value={acc.id} disabled={!!hasBkt}>
+                        {acc.displayName} {hasBkt ? `(Allocated: ${hasBkt.name})` : '(Available for 8 GB Bucket)'}
+                      </option>
+                    );
+                  })}
+                </select>
+                <span style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px', display: 'block' }}>
+                  Rule: Exactly one 8 GB R2 bucket is allowed per Cloudflare account.
+                </span>
+              </div>
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Bucket Name</label>
                 <input
@@ -1289,13 +1336,13 @@ export default function AdminDashboard() {
               </div>
               <div style={{ marginBottom: '16px' }}>
                 <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>
-                  Logical Quota (GiB) - Application Enforced Standard
+                  Logical Quota (Strict 8 GiB Standard)
                 </label>
                 <input
-                  type="number"
-                  value={newBucketQuota}
-                  onChange={(e) => setNewBucketQuota(parseInt(e.target.value, 10))}
-                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                  type="text"
+                  value="8 GiB (8,589,934,592 Bytes) - Fixed 1:1 Standard"
+                  disabled
+                  style={{ width: '100%', padding: '10px', background: '#1e293b', border: '1px solid #334155', borderRadius: '8px', color: '#10b981', fontWeight: 600, boxSizing: 'border-box' }}
                 />
               </div>
               <div style={{ marginBottom: '20px' }}>
@@ -1384,6 +1431,21 @@ export default function AdminDashboard() {
                   placeholder="Enter R2 Secret Access Key"
                   style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
                 />
+              </div>
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>
+                  R2 Bucket Name (1 Bucket per Cloudflare Account • 8 GiB Quota)
+                </label>
+                <input
+                  type="text"
+                  value={newAccBucketName}
+                  onChange={(e) => setNewAccBucketName(e.target.value)}
+                  placeholder="e.g. wavemusic-r2-prod"
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+                <span style={{ fontSize: '11px', color: '#10b981', marginTop: '4px', display: 'block' }}>
+                  ✓ Automatically allocates 1 dedicated R2 bucket with 8 GiB logical quota for this account
+                </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
                 <button

@@ -24,6 +24,14 @@ async function main() {
     const delRes = await client.query(`DELETE FROM storage_buckets WHERE bucket_name LIKE 'prod-media-%';`);
     console.log(`Removed ${delRes.rowCount} test storage buckets`);
 
+    // Enforce 1 bucket per storage account in PostgreSQL
+    await client.query(`
+      ALTER TABLE storage_buckets DROP CONSTRAINT IF EXISTS uq_account_bucket;
+      ALTER TABLE storage_buckets DROP CONSTRAINT IF EXISTS uq_account_one_bucket;
+      ALTER TABLE storage_buckets ADD CONSTRAINT uq_account_one_bucket UNIQUE (storage_account_id);
+    `);
+    console.log('PostgreSQL constraint enforced: Exactly 1 R2 bucket per storage account.');
+
     const users = await client.query(`SELECT id, username, email, role FROM users;`);
     console.log('Current users:', users.rows);
 
