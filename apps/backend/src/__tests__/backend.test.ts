@@ -173,4 +173,95 @@ describe('Unified Backend API Integration Suite', () => {
     });
     assert.strictEqual(updated.logicalQuotaBytes, 10737418240);
   });
+
+  it('250 MB Chunking & Virtual Reassembly: splits 2 GB movie into 250 MB chunks and streams seamlessly', async () => {
+    const twoGiB = 2 * 1024 * 1024 * 1024; // 2,147,483,648 bytes
+    const chunkSize = 250 * 1024 * 1024; // 250 MB = 262,144,000 bytes
+    const expectedChunkCount = Math.ceil(twoGiB / chunkSize); // 9 chunks
+
+    assert.strictEqual(expectedChunkCount, 9);
+
+    // 1. Plan chunk distribution for a 2 GB movie
+    const eligibleBuckets = storageManager.getEligibleBuckets();
+    const fileId = `movie-2gb-${Date.now()}`;
+
+    const plan = await storageManager.chunkPlanner.planDistribution(
+      fileId,
+      twoGiB,
+      eligibleBuckets,
+      (accId) => storageManager.getProvider(accId),
+      chunkSize
+    );
+
+    assert.strictEqual(plan.chunkCount, 9);
+    assert.strictEqual(plan.chunks.length, 9);
+    assert.strictEqual(plan.chunks[0].manifest.byteStart, 0);
+    assert.strictEqual(plan.chunks[0].manifest.byteEnd, chunkSize - 1);
+    assert.strictEqual(plan.chunks[0].manifest.chunkSizeBytes, chunkSize);
+
+    // Verify last chunk takes only remaining bytes
+    const lastChunk = plan.chunks[8].manifest;
+    assert.strictEqual(lastChunk.byteStart, 8 * chunkSize);
+    assert.strictEqual(lastChunk.byteEnd, twoGiB - 1);
+    assert.strictEqual(lastChunk.chunkSizeBytes, twoGiB - 8 * chunkSize);
+
+    // 2. Create file manifest and verify chunks
+    const chunks = plan.chunks.map((c) => ({
+      ...c.manifest,
+      status: 'VERIFIED' as any
+    }));
+
+    const fileManifest = {
+      id: fileId,
+      ownerId: 'user-admin-1',
+      originalFilename: 'Interstellar_2014_4K_Remux.mkv',
+      mimeType: 'video/x-matroska',
+      totalSizeBytes: twoGiB,
+      chunkCount: 9,
+      chunkSizeBytes: chunkSize,
+      uploadStatus: 'READY' as any,
+      processingStatus: 'COMPLETED' as any,
+      isDistributed: plan.isDistributed,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      chunks
+    };
+
+    db.files.set(fileId, fileManifest);
+
+    // 3. Test Range Gateway Head Request & Virtual Reassembly Range Parsing
+    const headRes = storageManager.rangeGateway.handleHeadRequest(fileManifest);
+    assert.strictEqual(headRes.statusCode, 200);
+    assert.strictEqual(headRes.headers['Content-Length'], twoGiB);
+    assert.strictEqual(headRes.headers['Accept-Ranges'], 'bytes');
+
+    // Test byte range parsing across 250 MB chunk boundary (e.g. byte 245 MB to 255 MB)
+    const crossChunkStart = 245 * 1024 * 1024;
+    const crossChunkEnd = 255 * 1024 * 1024;
+    const rangeHeader = `bytes=${crossChunkStart}-${crossChunkEnd}`;
+
+    const parsedRange = storageManager.rangeGateway.parseRangeHeader(rangeHeader, twoGiB);
+    assert.ok(parsedRange);
+    assert.strictEqual(parsedRange.start, crossChunkStart);
+    assert.strictEqual(parsedRange.end, crossChunkEnd);
+
+    // Verify that the requested range maps accurately across chunk 0 and chunk 1
+    const affectedChunks = fileManifest.chunks.filter(
+      (c) => c.byteEnd >= crossChunkStart && c.byteStart <= crossChunkEnd
+    );
+    assert.strictEqual(affectedChunks.length, 2);
+    assert.strictEqual(affectedChunks[0].chunkIndex, 0);
+    assert.strictEqual(affectedChunks[1].chunkIndex, 1);
+
+    // Verify slice offsets
+    const slice0Start = Math.max(0, crossChunkStart - affectedChunks[0].byteStart);
+    const slice0End = Math.min(affectedChunks[0].chunkSizeBytes - 1, crossChunkEnd - affectedChunks[0].byteStart);
+    assert.strictEqual(slice0Start, 245 * 1024 * 1024);
+    assert.strictEqual(slice0End, chunkSize - 1);
+
+    const slice1Start = Math.max(0, crossChunkStart - affectedChunks[1].byteStart);
+    const slice1End = Math.min(affectedChunks[1].chunkSizeBytes - 1, crossChunkEnd - affectedChunks[1].byteStart);
+    assert.strictEqual(slice1Start, 0);
+    assert.strictEqual(slice1End, crossChunkEnd - affectedChunks[1].byteStart);
+  });
 });

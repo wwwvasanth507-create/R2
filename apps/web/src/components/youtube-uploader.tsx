@@ -276,7 +276,275 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     }
   };
 
-  // Start Real Direct-to-R2 Upload
+  // 1. Direct Single-Shot Upload (for videos <= 250 MB)
+  const handleDirectUpload = async (finalThumbnailUrl: string) => {
+    if (!file) return;
+
+    // Build Query Parameters for all metadata (safely avoiding any oversized HTTP headers)
+    const queryParams = new URLSearchParams({
+      title: title.trim(),
+      description: description.trim(),
+      category: category,
+      tags: tags,
+      isShort: String(isShort),
+      visibility: visibility,
+      filename: file.name,
+      duration: String(Math.round(videoDuration || 120)),
+      thumbnailUrl: finalThumbnailUrl
+    });
+
+    const xhr = new XMLHttpRequest();
+    xhrRef.current = xhr;
+
+    xhr.open('POST', `${apiBase}/api/videos/upload?${queryParams.toString()}`);
+
+    // Set standard headers
+    xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+
+    try {
+      const token = localStorage.getItem('token');
+      if (token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      }
+    } catch {}
+
+    let lastLoaded = 0;
+    let lastTime = Date.now();
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const percent = Math.round((e.loaded / e.total) * 100);
+        setUploadPercent(percent);
+
+        const now = Date.now();
+        const timeDiff = (now - lastTime) / 1000;
+        if (timeDiff >= 0.5) {
+          const bytesDiff = e.loaded - lastLoaded;
+          const speedBps = bytesDiff / timeDiff;
+          const speedMbps = (speedBps / (1024 * 1024)).toFixed(1);
+          setUploadSpeed(`${speedMbps} MB/s`);
+
+          const remainingBytes = e.total - e.loaded;
+          const remainingSecs = speedBps > 0 ? Math.round(remainingBytes / speedBps) : 0;
+          setRemainingText(remainingSecs > 0 ? `${remainingSecs}s remaining` : 'Finalizing...');
+
+          lastLoaded = e.loaded;
+          lastTime = now;
+        }
+
+        setTransferredText(`${formatBytes(e.loaded)} of ${formatBytes(e.total)} (Direct Upload)`);
+      }
+    };
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const response = JSON.parse(xhr.responseText);
+          setUploadedVideo(response.video);
+          onUploadSuccess(response.video);
+          setStep('success');
+        } catch {
+          setErrorMessage('Video uploaded, but failed to parse server response.');
+          setStep('details');
+        }
+      } else {
+        try {
+          const errData = JSON.parse(xhr.responseText);
+          setErrorMessage(errData.error || `Upload failed with status code ${xhr.status}`);
+        } catch {
+          setErrorMessage(`Upload failed with status code ${xhr.status}`);
+        }
+        setStep('details');
+      }
+    };
+
+    xhr.onerror = () => {
+      setErrorMessage('Network error during upload. Please check connection and try again.');
+      setStep('details');
+    };
+
+    xhr.send(file);
+  };
+
+  // 2. Chunked Multi-Part Upload (for videos > 250 MB, split into 250 MB slices)
+  const handleChunkedUpload = async (finalThumbnailUrl: string) => {
+    if (!file) return;
+
+    const CHUNK_SIZE = 250 * 1024 * 1024; // 250 MB
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+    setStep('uploading');
+    setUploadPercent(0);
+    setTransferredText(`Initializing 250 MB chunked session (0 of ${totalChunks} chunks)...`);
+
+    // Step A: Initialize Chunked Session
+    let initData: any;
+    try {
+      const token = localStorage.getItem('token');
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const initRes = await fetch(`${apiBase}/api/videos/chunked/init`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim(),
+          category,
+          tags,
+          isShort,
+          visibility,
+          filename: file.name,
+          duration: Math.round(videoDuration || 120),
+          thumbnailUrl: finalThumbnailUrl,
+          totalSizeBytes: file.size,
+          chunkSizeBytes: CHUNK_SIZE,
+          chunkCount: totalChunks
+        })
+      });
+
+      if (!initRes.ok) {
+        const errJson = await initRes.json().catch(() => ({}));
+        throw new Error(errJson.error || `Initialization failed with status ${initRes.status}`);
+      }
+
+      initData = await initRes.json();
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to initialize chunked upload.');
+      setStep('details');
+      return;
+    }
+
+    const { fileId, videoId } = initData;
+
+    // Step B: Upload Each 250 MB Chunk Separately
+    let totalBytesUploaded = 0;
+    let lastTime = Date.now();
+    let lastLoaded = 0;
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(file.size, start + CHUNK_SIZE);
+      const chunkBlob = file.slice(start, end);
+      const currentChunkSize = end - start;
+
+      let chunkDone = false;
+      let retryCount = 0;
+
+      while (!chunkDone && retryCount < 3) {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhrRef.current = xhr;
+
+            xhr.open(
+              'POST',
+              `${apiBase}/api/videos/chunked/upload-chunk?fileId=${encodeURIComponent(fileId)}&chunkIndex=${i}`
+            );
+
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            try {
+              const token = localStorage.getItem('token');
+              if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            } catch {}
+
+            xhr.upload.onprogress = (e) => {
+              if (e.lengthComputable) {
+                const currentOverallBytes = totalBytesUploaded + e.loaded;
+                const percent = Math.min(99, Math.round((currentOverallBytes / file.size) * 100));
+                setUploadPercent(percent);
+
+                const now = Date.now();
+                const diffSec = (now - lastTime) / 1000;
+                if (diffSec >= 0.5) {
+                  const bytesDiff = currentOverallBytes - lastLoaded;
+                  const speedBps = bytesDiff / diffSec;
+                  const speedMbps = (speedBps / (1024 * 1024)).toFixed(1);
+                  setUploadSpeed(`${speedMbps} MB/s`);
+
+                  const remainingBytes = file.size - currentOverallBytes;
+                  const remainingSecs = speedBps > 0 ? Math.round(remainingBytes / speedBps) : 0;
+                  setRemainingText(
+                    remainingSecs > 0
+                      ? `${remainingSecs}s remaining • Chunk ${i + 1}/${totalChunks}`
+                      : `Finalizing chunk ${i + 1}/${totalChunks}...`
+                  );
+
+                  lastLoaded = currentOverallBytes;
+                  lastTime = now;
+                }
+
+                setTransferredText(
+                  `${formatBytes(currentOverallBytes)} of ${formatBytes(file.size)} (Chunk ${i + 1} of ${totalChunks})`
+                );
+              }
+            };
+
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                totalBytesUploaded += currentChunkSize;
+                chunkDone = true;
+                resolve();
+              } else {
+                reject(new Error(`Chunk ${i + 1} failed with status code ${xhr.status}`));
+              }
+            };
+
+            xhr.onerror = () => {
+              reject(new Error(`Network error uploading Chunk ${i + 1}`));
+            };
+
+            xhr.send(chunkBlob);
+          });
+        } catch (err: any) {
+          retryCount++;
+          console.warn(`Retry ${retryCount} for Chunk ${i + 1}:`, err.message);
+          if (retryCount >= 3) {
+            setErrorMessage(`Upload failed at Chunk ${i + 1} of ${totalChunks}: ${err.message}`);
+            setStep('details');
+            return;
+          }
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+      }
+    }
+
+    // Step C: Finalize & Complete Upload
+    setUploadPercent(100);
+    setRemainingText('Stitching chunks into unified streamable video...');
+    setTransferredText(`${formatBytes(file.size)} of ${formatBytes(file.size)} (All ${totalChunks} chunks uploaded)`);
+
+    try {
+      const token = localStorage.getItem('token');
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const compRes = await fetch(`${apiBase}/api/videos/chunked/complete`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ fileId, videoId })
+      });
+
+      if (!compRes.ok) {
+        const errJson = await compRes.json().catch(() => ({}));
+        throw new Error(errJson.error || `Finalization failed with status ${compRes.status}`);
+      }
+
+      const compData = await compRes.json();
+      setUploadedVideo(compData.video);
+      onUploadSuccess(compData.video);
+      setStep('success');
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Failed to complete chunked video.');
+      setStep('details');
+    }
+  };
+
+  // Main Upload Entry Point (Auto-routes between Direct and 250 MB Chunked Upload)
   const handleStartUpload = async () => {
     if (!file) return;
     if (!title.trim()) {
@@ -312,92 +580,16 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
       finalThumbnailUrl = 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800';
     }
 
-    // 2. Build Query Parameters for all metadata (safely avoiding any oversized HTTP headers)
-    const queryParams = new URLSearchParams({
-      title: title.trim(),
-      description: description.trim(),
-      category: category,
-      tags: tags,
-      isShort: String(isShort),
-      visibility: visibility,
-      filename: file.name,
-      duration: String(Math.round(videoDuration || 120)),
-      thumbnailUrl: finalThumbnailUrl
-    });
+    // 2. Check 250 MB Threshold
+    const CHUNK_SIZE_THRESHOLD = 250 * 1024 * 1024; // 250 MB
 
-    const xhr = new XMLHttpRequest();
-    xhrRef.current = xhr;
-
-    xhr.open('POST', `${apiBase}/api/videos/upload?${queryParams.toString()}`);
-
-    // Set ONLY standard small headers (zero header overflow)
-    xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
-
-    // Attach Bearer token if user is signed in
-    try {
-      const token = localStorage.getItem('token');
-      if (token) {
-        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-      }
-    } catch {}
-
-    let lastLoaded = 0;
-    let lastTime = Date.now();
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const percent = Math.round((e.loaded / e.total) * 100);
-        setUploadPercent(percent);
-
-        const now = Date.now();
-        const timeDiff = (now - lastTime) / 1000;
-        if (timeDiff >= 0.5) {
-          const bytesDiff = e.loaded - lastLoaded;
-          const speedBps = bytesDiff / timeDiff;
-          const speedMbps = (speedBps / (1024 * 1024)).toFixed(1);
-          setUploadSpeed(`${speedMbps} MB/s`);
-
-          const remainingBytes = e.total - e.loaded;
-          const remainingSecs = speedBps > 0 ? Math.round(remainingBytes / speedBps) : 0;
-          setRemainingText(remainingSecs > 0 ? `${remainingSecs}s remaining` : 'Finalizing...');
-
-          lastLoaded = e.loaded;
-          lastTime = now;
-        }
-
-        setTransferredText(`${formatBytes(e.loaded)} of ${formatBytes(e.total)}`);
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          const response = JSON.parse(xhr.responseText);
-          setUploadedVideo(response.video);
-          onUploadSuccess(response.video);
-          setStep('success');
-        } catch {
-          setErrorMessage('Video uploaded, but failed to parse server response.');
-          setStep('details');
-        }
-      } else {
-        try {
-          const errData = JSON.parse(xhr.responseText);
-          setErrorMessage(errData.error || `Upload failed with status code ${xhr.status}`);
-        } catch {
-          setErrorMessage(`Upload failed with status code ${xhr.status}`);
-        }
-        setStep('details');
-      }
-    };
-
-    xhr.onerror = () => {
-      setErrorMessage('Network error during upload. Please check connection and try again.');
-      setStep('details');
-    };
-
-    // Send the raw video stream bit-for-bit directly to R2 bucket!
-    xhr.send(file);
+    if (file.size <= CHUNK_SIZE_THRESHOLD) {
+      // <= 250 MB: Upload straightly
+      await handleDirectUpload(finalThumbnailUrl);
+    } else {
+      // > 250 MB: Split into 250 MB chunks and upload separately
+      await handleChunkedUpload(finalThumbnailUrl);
+    }
   };
 
   return (
@@ -591,10 +783,39 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
               border: '1px solid #333'
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <FileVideo size={20} color="#3ea6ff" />
               <span style={{ fontSize: '13px', fontWeight: 500, color: '#fff' }}>{file?.name}</span>
               <span style={{ fontSize: '12px', color: '#888' }}>({fileSizeFormatted})</span>
+              {file && file.size > 250 * 1024 * 1024 ? (
+                <span
+                  style={{
+                    fontSize: '11px',
+                    background: 'rgba(62, 166, 255, 0.15)',
+                    color: '#3ea6ff',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    border: '1px solid rgba(62, 166, 255, 0.3)',
+                    fontWeight: 600
+                  }}
+                >
+                  ⚡ Auto-Split: {Math.ceil(file.size / (250 * 1024 * 1024))} x 250 MB chunks
+                </span>
+              ) : (
+                <span
+                  style={{
+                    fontSize: '11px',
+                    background: 'rgba(74, 222, 128, 0.15)',
+                    color: '#4ade80',
+                    padding: '2px 8px',
+                    borderRadius: '4px',
+                    border: '1px solid rgba(74, 222, 128, 0.3)',
+                    fontWeight: 600
+                  }}
+                >
+                  ✓ Direct Stream Upload (&le; 250 MB)
+                </span>
+              )}
             </div>
             <button
               onClick={() => setStep('select')}

@@ -185,11 +185,36 @@ export class DatabaseService {
         console.log(`[POSTGRES] Synchronized ${vidRes.rows.length} real videos from database.`);
       }
 
+      // Synchronize chunks from PostgreSQL
+      const chunkRes = await this.pgPool.query('SELECT * FROM file_chunks ORDER BY chunk_index ASC');
+      const chunksByFileId = new Map<string, IFileChunkManifest[]>();
+      for (const cRow of chunkRes.rows) {
+        const cManifest: IFileChunkManifest = {
+          id: cRow.id,
+          fileId: cRow.file_id,
+          chunkIndex: cRow.chunk_index,
+          byteStart: Number(cRow.byte_start),
+          byteEnd: Number(cRow.byte_end),
+          chunkSizeBytes: Number(cRow.chunk_size_bytes),
+          bucketId: cRow.bucket_id,
+          bucketName: cRow.bucket_name,
+          storageAccountId: cRow.storage_account_id,
+          objectKey: cRow.object_key,
+          status: (cRow.status as ChunkUploadStatus) || ChunkUploadStatus.VERIFIED,
+          chunkSha256Checksum: cRow.chunk_sha256_checksum,
+          verifiedAt: cRow.verified_at || new Date()
+        };
+        if (!chunksByFileId.has(cRow.file_id)) {
+          chunksByFileId.set(cRow.file_id, []);
+        }
+        chunksByFileId.get(cRow.file_id)!.push(cManifest);
+        this.fileChunks.set(cManifest.id, cManifest);
+      }
+
       // Synchronize real files from PostgreSQL
       const fileRes = await this.pgPool.query('SELECT * FROM files');
       if (fileRes.rows.length > 0) {
         this.files.clear();
-        this.fileChunks.clear();
         const primaryBucket = this.storageBuckets.values().next().value;
         for (const row of fileRes.rows) {
           const size = Number(row.total_size_bytes);
@@ -200,20 +225,25 @@ export class DatabaseService {
             ? `thumbnails/${thumbUuid}.jpg`
             : `videos/${row.id}/${sanitizedFilename}`;
 
-          const chunk: IFileChunkManifest = {
-            id: `chk-${row.id}-0`,
-            fileId: row.id,
-            chunkIndex: 0,
-            byteStart: 0,
-            byteEnd: Math.max(0, size - 1),
-            chunkSizeBytes: size,
-            bucketId: primaryBucket ? primaryBucket.id : 'c0000000-0000-0000-0000-000000000001',
-            bucketName: primaryBucket ? primaryBucket.bucketName : 'vasanth01-r2',
-            storageAccountId: primaryBucket ? primaryBucket.storageAccountId : 'b0000000-0000-0000-0000-794756325126',
-            objectKey: objectKey,
-            status: ChunkUploadStatus.VERIFIED,
-            verifiedAt: new Date()
-          };
+          let chunks = chunksByFileId.get(row.id);
+          if (!chunks || chunks.length === 0) {
+            const defaultChunk: IFileChunkManifest = {
+              id: `chk-${row.id}-0`,
+              fileId: row.id,
+              chunkIndex: 0,
+              byteStart: 0,
+              byteEnd: Math.max(0, size - 1),
+              chunkSizeBytes: size,
+              bucketId: primaryBucket ? primaryBucket.id : 'c0000000-0000-0000-0000-000000000001',
+              bucketName: primaryBucket ? primaryBucket.bucketName : 'vasanth01-r2',
+              storageAccountId: primaryBucket ? primaryBucket.storageAccountId : 'b0000000-0000-0000-0000-794756325126',
+              objectKey: objectKey,
+              status: ChunkUploadStatus.VERIFIED,
+              verifiedAt: new Date()
+            };
+            chunks = [defaultChunk];
+            this.fileChunks.set(defaultChunk.id, defaultChunk);
+          }
 
           const fileManifest: IFileManifest = {
             id: row.id,
@@ -222,14 +252,14 @@ export class DatabaseService {
             mimeType: row.mime_type,
             totalSizeBytes: size,
             totalSha256Checksum: row.total_sha256_checksum,
-            chunkCount: 1,
-            chunkSizeBytes: size,
+            chunkCount: chunks.length,
+            chunkSizeBytes: Number(row.chunk_size_bytes) || size,
             uploadStatus: (row.upload_status as FileUploadStatus) || FileUploadStatus.READY,
             processingStatus: VideoProcessingStatus.COMPLETED,
-            isDistributed: false,
+            isDistributed: Boolean(row.is_distributed),
             createdAt: row.created_at || new Date(),
             updatedAt: row.updated_at || new Date(),
-            chunks: [chunk]
+            chunks
           };
 
           this.files.set(fileManifest.id, fileManifest);
@@ -237,9 +267,8 @@ export class DatabaseService {
             const friendlyThumbId = row.original_filename.replace(/\.[^/.]+$/, '');
             this.files.set(friendlyThumbId, fileManifest);
           }
-          this.fileChunks.set(chunk.id, chunk);
         }
-        console.log(`[POSTGRES] Synchronized ${fileRes.rows.length} real files from database.`);
+        console.log(`[POSTGRES] Synchronized ${fileRes.rows.length} real files and ${chunkRes.rows.length} chunks from database.`);
       }
     } catch (err: any) {
       console.warn('[POSTGRES] Storage synchronization notice:', err.message);
@@ -348,6 +377,59 @@ export class DatabaseService {
       console.log(`[POSTGRES] File "${file.originalFilename}" (${file.totalSizeBytes} bytes) persisted to PostgreSQL 'files' table.`);
     } catch (err: any) {
       console.warn('[POSTGRES] File persistence notice:', err.message);
+    }
+  }
+
+  public async saveChunkToPostgres(chunk: IFileChunkManifest): Promise<void> {
+    if (!this.pgPool) return;
+    try {
+      await this.pgPool.query(
+        `INSERT INTO file_chunks (
+          id, file_id, chunk_index, storage_account_id, bucket_id, bucket_name,
+          object_key, byte_start, byte_end, chunk_size_bytes, status,
+          chunk_sha256_checksum, verified_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status,
+          verified_at = EXCLUDED.verified_at;`,
+        [
+          chunk.id,
+          chunk.fileId,
+          chunk.chunkIndex,
+          chunk.storageAccountId,
+          chunk.bucketId,
+          chunk.bucketName,
+          chunk.objectKey,
+          chunk.byteStart,
+          chunk.byteEnd,
+          chunk.chunkSizeBytes,
+          chunk.status,
+          chunk.chunkSha256Checksum || '',
+          chunk.verifiedAt || new Date()
+        ]
+      );
+    } catch (err: any) {
+      console.warn('[POSTGRES] Chunk persistence notice:', err.message);
+    }
+  }
+
+  public async saveBucketToPostgres(bucket: IStorageBucket): Promise<void> {
+    if (!this.pgPool) return;
+    try {
+      await this.pgPool.query(
+        `UPDATE storage_buckets
+         SET used_storage_bytes = $1, available_storage_bytes = $2, object_count = $3, updated_at = NOW()
+         WHERE id::text = $4 OR bucket_name = $5`,
+        [
+          bucket.usedStorageBytes,
+          bucket.availableStorageBytes,
+          bucket.objectCount || 0,
+          bucket.id,
+          bucket.bucketName
+        ]
+      );
+    } catch (err: any) {
+      console.warn('[POSTGRES] Bucket persistence notice:', err.message);
     }
   }
 

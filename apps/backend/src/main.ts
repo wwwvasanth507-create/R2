@@ -19,6 +19,7 @@ import {
   ChunkUploadStatus,
   VideoProcessingStatus,
   IFileManifest,
+  IFileChunkManifest,
   IStorageBucket,
   BucketHealthStatus,
   DEFAULT_LOGICAL_QUOTA_BYTES
@@ -280,6 +281,9 @@ app.get('/api/files/:id/download', async (req: Request, res: Response) => {
     for (const [key, val] of Object.entries(downloadResult.headers)) {
       res.setHeader(key, val);
     }
+    req.on('close', () => {
+      downloadResult.stream.destroy();
+    });
     downloadResult.stream.pipe(res);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -763,6 +767,333 @@ app.post('/api/videos/upload-thumbnail', async (req: Request, res: Response) => 
   }
 });
 
+// =========================================================================
+// --- Chunked Video Upload Endpoints (250 MB Split & Seamless Streaming) ---
+// =========================================================================
+
+// 1. Initialize Chunked Video Upload Session
+app.post('/api/videos/chunked/init', async (req: Request, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const userId = authUser ? authUser.sub : 'user-admin-1';
+
+    const {
+      title,
+      description,
+      category,
+      tags,
+      isShort,
+      visibility,
+      filename,
+      duration,
+      thumbnailUrl: clientThumbnailUrl,
+      totalSizeBytes,
+      chunkSizeBytes: reqChunkSizeBytes,
+      chunkCount: reqChunkCount
+    } = req.body;
+
+    const parsedTotalSizeBytes = Number(totalSizeBytes);
+    if (!parsedTotalSizeBytes || parsedTotalSizeBytes <= 0) {
+      return res.status(400).json({ error: 'Valid totalSizeBytes (> 0) is required.' });
+    }
+
+    const chunkSizeBytes = Number(reqChunkSizeBytes) || (250 * 1024 * 1024); // 250 MB
+    const chunkCount = Number(reqChunkCount) || Math.ceil(parsedTotalSizeBytes / chunkSizeBytes);
+
+    // Get active bucket(s)
+    let eligibleBuckets = storageManager.getEligibleBuckets();
+    if (eligibleBuckets.length === 0) {
+      const defaultBucket: IStorageBucket = {
+        id: 'c0000000-0000-0000-0000-000000000001',
+        bucketName: 'vasanth01-r2',
+        storageAccountId: 'b0000000-0000-0000-0000-794756325126',
+        region: 'auto',
+        logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
+        usedStorageBytes: 0,
+        reservedStorageBytes: 0,
+        availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
+        priority: 1,
+        healthStatus: BucketHealthStatus.HEALTHY,
+        isEnabled: true,
+        objectCount: 0,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      db.storageBuckets.set(defaultBucket.id, defaultBucket);
+      eligibleBuckets = [defaultBucket];
+    }
+
+    // Check remaining quota across buckets
+    const totalAvail = eligibleBuckets.reduce(
+      (acc, b) => acc + Math.max(0, b.logicalQuotaBytes - (b.usedStorageBytes + b.reservedStorageBytes)),
+      0
+    );
+    if (parsedTotalSizeBytes > totalAvail) {
+      return res.status(400).json({
+        error: `Storage capacity exceeded. Required: ${(parsedTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB, Available across active buckets: ${(totalAvail / (1024 * 1024)).toFixed(1)} MB.`
+      });
+    }
+
+    const fileId = crypto.randomUUID();
+    const rawFilename = filename || 'video.mp4';
+
+    // Allocate 250 MB chunks sequentially across buckets
+    const chunks: IFileChunkManifest[] = [];
+    let bucketIdx = 0;
+    let targetBucket = eligibleBuckets[bucketIdx];
+
+    for (let i = 0; i < chunkCount; i++) {
+      const byteStart = i * chunkSizeBytes;
+      const byteEnd = Math.min(parsedTotalSizeBytes - 1, byteStart + chunkSizeBytes - 1);
+      const currentChunkSize = byteEnd - byteStart + 1;
+
+      // Check remaining space in targetBucket; if exhausted, spill over to next bucket
+      const availInBucket = targetBucket.logicalQuotaBytes - (targetBucket.usedStorageBytes + targetBucket.reservedStorageBytes);
+      if (currentChunkSize > availInBucket && bucketIdx + 1 < eligibleBuckets.length) {
+        bucketIdx++;
+        targetBucket = eligibleBuckets[bucketIdx];
+      }
+
+      const objectKey = `videos/${fileId}/chunks/chunk_${String(i).padStart(5, '0')}.bin`;
+      const chunkManifest: IFileChunkManifest = {
+        id: `chk-${fileId}-${i}`,
+        fileId,
+        chunkIndex: i,
+        byteStart,
+        byteEnd,
+        chunkSizeBytes: currentChunkSize,
+        bucketId: targetBucket.id,
+        bucketName: targetBucket.bucketName,
+        storageAccountId: targetBucket.storageAccountId,
+        objectKey,
+        status: ChunkUploadStatus.PENDING
+      };
+
+      chunks.push(chunkManifest);
+      db.fileChunks.set(chunkManifest.id, chunkManifest);
+    }
+
+    // Save File Manifest
+    const fileManifest: IFileManifest = {
+      id: fileId,
+      ownerId: userId,
+      originalFilename: rawFilename,
+      mimeType: 'video/mp4',
+      totalSizeBytes: parsedTotalSizeBytes,
+      chunkCount,
+      chunkSizeBytes,
+      uploadStatus: FileUploadStatus.UPLOADING,
+      processingStatus: VideoProcessingStatus.QUEUED,
+      isDistributed: chunks.some((c) => c.bucketId !== chunks[0].bucketId),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      chunks
+    };
+
+    db.files.set(fileId, fileManifest);
+    await db.saveFileToPostgres(fileManifest);
+
+    // Save Chunks to PostgreSQL
+    for (const chk of chunks) {
+      await db.saveChunkToPostgres(chk);
+    }
+
+    // Handle Thumbnail
+    let finalThumbnailUrl = clientThumbnailUrl;
+    if (!finalThumbnailUrl || finalThumbnailUrl.includes('unsplash.com')) {
+      try {
+        const svgContent = generateAutoThumbnailSvg(title || rawFilename, category || 'Movies', Number(duration) || 120);
+        const thumbBuf = Buffer.from(svgContent, 'utf-8');
+        const thumbKey = `thumbnails/${fileId}.svg`;
+        const thumbProvider = storageManager.getProvider(targetBucket.storageAccountId);
+        await thumbProvider.putObject(targetBucket.bucketName, thumbKey, thumbBuf, 'image/svg+xml', {
+          contentLength: String(thumbBuf.length)
+        });
+        const thumbFileId = `thumb-${fileId}`;
+        const thumbManifest: IFileManifest = {
+          id: thumbFileId,
+          ownerId: userId,
+          originalFilename: `${fileId}-thumb.svg`,
+          mimeType: 'image/svg+xml',
+          totalSizeBytes: thumbBuf.length,
+          chunkCount: 1,
+          chunkSizeBytes: thumbBuf.length,
+          uploadStatus: FileUploadStatus.READY,
+          processingStatus: VideoProcessingStatus.COMPLETED,
+          isDistributed: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          chunks: [{
+            id: `chk-${thumbFileId}-0`,
+            fileId: thumbFileId,
+            chunkIndex: 0,
+            byteStart: 0,
+            byteEnd: thumbBuf.length - 1,
+            chunkSizeBytes: thumbBuf.length,
+            bucketId: targetBucket.id,
+            bucketName: targetBucket.bucketName,
+            storageAccountId: targetBucket.storageAccountId,
+            objectKey: thumbKey,
+            status: ChunkUploadStatus.VERIFIED,
+            verifiedAt: new Date()
+          }]
+        };
+        db.files.set(thumbFileId, thumbManifest);
+        await db.saveFileToPostgres(thumbManifest);
+        finalThumbnailUrl = `/api/files/${thumbFileId}/download`;
+      } catch (err: any) {
+        console.warn('Chunked auto-thumbnail notice:', err.message);
+      }
+    }
+
+    if (!finalThumbnailUrl) {
+      finalThumbnailUrl = 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800';
+    }
+
+    // Create Video in DB (with initial master playlist URL pointing to Range Gateway)
+    const streamUrl = `/api/files/${fileId}/download`;
+    const parsedTags = Array.isArray(tags)
+      ? tags
+      : (typeof tags === 'string' && tags ? tags.split(',').map((t: string) => t.trim()) : [category || 'Video']);
+
+    const video = await youtubeService.createVideo(userId, {
+      title: title || rawFilename,
+      description: description || '',
+      thumbnailUrl: finalThumbnailUrl,
+      masterPlaylistUrl: streamUrl,
+      durationSeconds: Number(duration) || 120,
+      visibility: visibility || VideoVisibility.PUBLIC,
+      isShort: Boolean(isShort),
+      tags: parsedTags,
+      fileId
+    });
+
+    console.log(`[CHUNKED INIT] Initialized session for "${title}" (${parsedTotalSizeBytes} bytes across ${chunkCount} chunks of ${(chunkSizeBytes / (1024 * 1024)).toFixed(0)} MB).`);
+
+    res.status(201).json({
+      success: true,
+      fileId,
+      videoId: video.id,
+      chunkCount,
+      chunkSizeBytes,
+      totalSizeBytes: parsedTotalSizeBytes,
+      streamUrl
+    });
+  } catch (err: any) {
+    console.error('[CHUNKED INIT ERROR]', err);
+    res.status(500).json({ error: err.message || 'Failed to initialize chunked upload' });
+  }
+});
+
+// 2. Upload Individual 250 MB Chunk Directly to Cloudflare R2
+app.post('/api/videos/chunked/upload-chunk', async (req: Request, res: Response) => {
+  try {
+    const fileId = req.query.fileId as string;
+    const chunkIndex = parseInt(req.query.chunkIndex as string, 10);
+
+    if (!fileId || isNaN(chunkIndex)) {
+      return res.status(400).json({ error: 'fileId and valid chunkIndex are required' });
+    }
+
+    const file = db.files.get(fileId);
+    if (!file) {
+      return res.status(404).json({ error: `File manifest ${fileId} not found` });
+    }
+
+    const chunk = file.chunks ? file.chunks.find((c) => c.chunkIndex === chunkIndex) : null;
+    if (!chunk) {
+      return res.status(404).json({ error: `Chunk ${chunkIndex} for file ${fileId} not found` });
+    }
+
+    const provider = storageManager.getProvider(chunk.storageAccountId);
+    const pass = new PassThrough();
+    req.pipe(pass);
+
+    const contentLength = req.headers['content-length'] ? String(req.headers['content-length']) : String(chunk.chunkSizeBytes);
+
+    await provider.putObject(
+      chunk.bucketName,
+      chunk.objectKey,
+      pass,
+      'application/octet-stream',
+      { contentLength }
+    );
+
+    chunk.status = ChunkUploadStatus.VERIFIED;
+    chunk.verifiedAt = new Date();
+    db.fileChunks.set(chunk.id, chunk);
+
+    // Update target bucket stats
+    const bucket = db.storageBuckets.get(chunk.bucketId);
+    if (bucket) {
+      bucket.usedStorageBytes += chunk.chunkSizeBytes;
+      bucket.availableStorageBytes = Math.max(0, bucket.logicalQuotaBytes - bucket.usedStorageBytes);
+      await db.saveBucketToPostgres(bucket);
+    }
+
+    // Persist chunk status to PostgreSQL
+    await db.saveChunkToPostgres(chunk);
+
+    console.log(`[CHUNK UPLOAD] Verified chunk ${chunkIndex + 1}/${file.chunkCount} (${chunk.chunkSizeBytes} bytes) for file ${fileId}`);
+
+    res.status(200).json({
+      success: true,
+      chunkIndex,
+      chunkSizeBytes: chunk.chunkSizeBytes,
+      verified: true
+    });
+  } catch (err: any) {
+    console.error(`[CHUNK UPLOAD ERROR on chunk ${req.query.chunkIndex}]`, err);
+    res.status(500).json({ error: err.message || 'Chunk upload failed' });
+  }
+});
+
+// 3. Finalize & Complete Chunked Upload
+app.post('/api/videos/chunked/complete', async (req: Request, res: Response) => {
+  try {
+    const { fileId, videoId } = req.body;
+    if (!fileId || !videoId) {
+      return res.status(400).json({ error: 'fileId and videoId are required' });
+    }
+
+    const file = db.files.get(fileId);
+    if (!file) {
+      return res.status(404).json({ error: `File manifest ${fileId} not found` });
+    }
+
+    // Verify all chunks
+    const pendingChunks = file.chunks ? file.chunks.filter((c) => c.status !== ChunkUploadStatus.VERIFIED) : [];
+    if (pendingChunks.length > 0) {
+      return res.status(400).json({
+        error: `Cannot complete upload: ${pendingChunks.length} chunks are not yet verified.`
+      });
+    }
+
+    file.uploadStatus = FileUploadStatus.READY;
+    file.updatedAt = new Date();
+    await db.saveFileToPostgres(file);
+
+    const video = db.videos.get(videoId);
+    if (video) {
+      video.masterPlaylistUrl = `/api/files/${fileId}/download`;
+      await db.saveVideoToPostgres(video, fileId);
+    }
+
+    console.log(`[VIDEO CHUNKED COMPLETE] Video "${video?.title || file.originalFilename}" (${file.totalSizeBytes} bytes across ${file.chunkCount} chunks) successfully published and ready for streaming.`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Video uploaded and stitched successfully into a single streamable file',
+      video,
+      file,
+      streamUrl: `/api/files/${fileId}/download`
+    });
+  } catch (err: any) {
+    console.error('[CHUNKED COMPLETE ERROR]', err);
+    res.status(500).json({ error: err.message || 'Failed to complete chunked video' });
+  }
+});
+
 // --- YouTube Endpoints ---
 app.get('/api/youtube/videos', (req: Request, res: Response) => {
   const { search, tag } = req.query;
@@ -1011,7 +1342,11 @@ app.get('/api/streaming/manifest/:fileId/master.m3u8', (req: Request, res: Respo
 export { app };
 
 if (require.main === module) {
-  app.listen(config.port, () => {
+  const server = app.listen(config.port, () => {
     console.log(`🚀 Production Media Platform Backend listening on port ${config.port}`);
   });
+  // Disable socket timeout for massive 20GB+ streams and high-reliability chunked uploads
+  server.timeout = 0;
+  server.keepAliveTimeout = 650000;
+  server.headersTimeout = 660000;
 }
