@@ -1,0 +1,171 @@
+version: '3.8'
+
+networks:
+  media_internal_net:
+    driver: bridge
+    internal: false
+
+volumes:
+  pgdata_prod:
+  redisdata_prod:
+  ffmpeg_scratch:
+
+services:
+  # 1. PostgreSQL Database (Strictly on internal network)
+  postgres:
+    image: postgres:16-alpine
+    container_name: prod_postgres
+    restart: always
+    networks:
+      - media_internal_net
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-media_prod_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-SuperSecureProductionPassword2026!}
+      POSTGRES_DB: ${POSTGRES_DB:-media_platform_prod}
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+
+  # 2. Redis Cache & Job Queue (Authenticated with strong password)
+  redis:
+    image: redis:7-alpine
+    container_name: prod_redis
+    restart: always
+    networks:
+      - media_internal_net
+    command: redis-server --requirepass "${REDIS_PASSWORD:-SecureRedisPass2026!}" --maxmemory 1500mb --maxmemory-policy allkeys-lru --appendonly yes
+    volumes:
+      - redisdata_prod:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-SecureRedisPass2026!}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+
+  # 3. Backend API Gateway
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: prod_backend
+    restart: always
+    networks:
+      - media_internal_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - ../.env.production
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-media_prod_user}:${POSTGRES_PASSWORD:-SuperSecureProductionPassword2026!}@postgres:5432/${POSTGRES_DB:-media_platform_prod}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD:-SecureRedisPass2026!}@redis:6379
+      STORAGE_LOGICAL_QUOTA_BYTES: 8589934592 # 8 GiB
+      STORAGE_CHUNK_SIZE_BYTES: 268435456     # 256 MiB
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+
+  # 4. FFmpeg Video Transcoding Cluster Worker
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    container_name: prod_ffmpeg_worker
+    restart: always
+    networks:
+      - media_internal_net
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    volumes:
+      - ffmpeg_scratch:/tmp/ffmpeg_scratch
+    env_file:
+      - ../.env.production
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-media_prod_user}:${POSTGRES_PASSWORD:-SuperSecureProductionPassword2026!}@postgres:5432/${POSTGRES_DB:-media_platform_prod}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD:-SecureRedisPass2026!}@redis:6379
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4G
+
+  # 5. Consumer Next.js Web App
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    container_name: prod_web
+    restart: always
+    networks:
+      - media_internal_net
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+
+  # 6. Next.js Admin Dashboard
+  admin:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.admin
+    container_name: prod_admin
+    restart: always
+    networks:
+      - media_internal_net
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+
+  # 7. Reverse Proxy & Ingress
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: prod_nginx
+    restart: always
+    networks:
+      - media_internal_net
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web
+      - admin
+      - backend

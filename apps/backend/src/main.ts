@@ -71,6 +71,46 @@ app.get('/health', (req: Request, res: Response) => {
   });
 });
 
+// --- Prometheus Metrics Exporter ---
+app.get('/metrics', (req: Request, res: Response) => {
+  const metrics = storageManager.getStorageMetrics();
+  const mem = process.memoryUsage();
+  const uptime = Math.floor(process.uptime());
+
+  let output = '# HELP process_uptime_seconds The uptime of the backend process in seconds\n';
+  output += '# TYPE process_uptime_seconds gauge\n';
+  output += `process_uptime_seconds ${uptime}\n\n`;
+
+  output += '# HELP nodejs_heap_used_bytes Process heap memory used\n';
+  output += '# TYPE nodejs_heap_used_bytes gauge\n';
+  output += `nodejs_heap_used_bytes ${mem.heapUsed}\n\n`;
+
+  output += '# HELP r2_total_storage_bytes Total bytes stored in Cloudflare R2\n';
+  output += '# TYPE r2_total_storage_bytes gauge\n';
+  output += `r2_total_storage_bytes ${metrics.totalUsedBytes}\n\n`;
+
+  output += '# HELP r2_total_reserved_bytes Total bytes reserved for pending chunk uploads\n';
+  output += '# TYPE r2_total_reserved_bytes gauge\n';
+  output += `r2_total_reserved_bytes ${metrics.totalReservedBytes}\n\n`;
+
+  output += '# HELP r2_active_buckets_total Total active Cloudflare R2 buckets\n';
+  output += '# TYPE r2_active_buckets_total gauge\n';
+  output += `r2_active_buckets_total ${metrics.bucketsCount}\n\n`;
+
+  output += '# HELP r2_active_alerts_total Total unresolved storage threshold alerts\n';
+  output += '# TYPE r2_active_alerts_total gauge\n';
+  output += `r2_active_alerts_total ${metrics.activeAlertsCount}\n\n`;
+
+  for (const b of db.storageBuckets.values()) {
+    const quota = b.logicalQuotaBytes || 8589934592;
+    const pct = quota > 0 ? Math.round(((b.usedStorageBytes + b.reservedStorageBytes) / quota) * 100) : 0;
+    output += `r2_bucket_usage_percent{bucket="${b.bucketName}",id="${b.id}"} ${pct}\n`;
+  }
+
+  res.setHeader('Content-Type', 'text/plain; version=0.0.4');
+  res.send(output);
+});
+
 // --- Auth Endpoints ---
 app.post('/api/auth/register', (req: Request, res: Response) => {
   try {

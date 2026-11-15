@@ -1,0 +1,38 @@
+groups:
+  - name: media_platform_alerts
+    rules:
+      - alert: BackendApiDown
+        expr: up{job="backend_api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend API is down"
+          description: "Backend container is unresponsive for more than 1 minute."
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) * 100 > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated HTTP 5xx error rate"
+          description: "More than 1% of API requests resulted in 5xx errors over the last 5 minutes."
+
+      - alert: R2BucketLogicalQuotaExhausted
+        expr: r2_bucket_usage_percent >= 100
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "R2 Bucket has reached 100% of 8 GiB logical quota"
+          description: "Allocations to bucket are halted. Sequential spillover activated."
+
+      - alert: R2BucketWarning70
+        expr: r2_bucket_usage_percent >= 70
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Bucket has crossed 70% storage threshold"
+          description: "Usage exceeded 5.6 GiB of 8 GiB logical quota."

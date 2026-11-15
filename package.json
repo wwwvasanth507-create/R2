@@ -9,7 +9,10 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "test": "npm run test --workspaces",
+    "test": "npm run test --if-present --workspaces",
+    "test:large-files": "node --test scripts/dist/test-large-files.js",
+    "test:smoke": "node --test scripts/dist/production-smoke-test.js",
+    "test:all": "npm run test --if-present --workspaces && npm run test:large-files && npm run test:smoke",
     "lint": "npm run lint --workspaces"
   },
   "devDependencies": {
