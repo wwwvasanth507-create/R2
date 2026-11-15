@@ -4,7 +4,8 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   DeleteObjectCommand,
-  HeadBucketCommand
+  HeadBucketCommand,
+  ListObjectsV2Command
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Readable } from 'stream';
@@ -210,6 +211,33 @@ export class R2StorageProvider implements IStorageProvider {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async getBucketUsage(bucketName: string): Promise<{ objectCount: number; totalSizeBytes: number }> {
+    try {
+      let continuationToken: string | undefined = undefined;
+      let totalBytes = 0;
+      let count = 0;
+      do {
+        const command: ListObjectsV2Command = new ListObjectsV2Command({
+          Bucket: bucketName,
+          ContinuationToken: continuationToken
+        });
+        const res = await this.client.send(command);
+        if (res.Contents) {
+          for (const item of res.Contents) {
+            totalBytes += item.Size || 0;
+            count++;
+          }
+        }
+        continuationToken = res.NextContinuationToken;
+      } while (continuationToken);
+
+      return { objectCount: count, totalSizeBytes: totalBytes };
+    } catch (err: any) {
+      console.warn(`[R2StorageProvider] getBucketUsage notice for ${bucketName}:`, err.message);
+      return { objectCount: 0, totalSizeBytes: 0 };
     }
   }
 }

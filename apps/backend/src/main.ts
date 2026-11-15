@@ -680,6 +680,12 @@ app.post('/api/videos/upload', async (req: Request, res: Response) => {
     db.fileChunks.set(fileChunk.id, fileChunk);
     await db.saveFileToPostgres(fileManifest);
 
+    // Update real-time bucket usage and persist to PostgreSQL
+    targetBucket.usedStorageBytes += finalSize;
+    targetBucket.objectCount = (targetBucket.objectCount || 0) + 1;
+    targetBucket.availableStorageBytes = Math.max(0, targetBucket.logicalQuotaBytes - targetBucket.usedStorageBytes);
+    await db.saveBucketToPostgres(targetBucket);
+
     // Create Video in YouTube Service and DB
     const streamUrl = `/api/files/${fileId}/download`;
     const parsedTags = tagsStr
@@ -1174,6 +1180,19 @@ app.post('/api/videos/chunked/complete', async (req: Request, res: Response) => 
       await db.saveVideoToPostgres(video, fileId);
     }
 
+    // Update real-time storage quota usage across assigned buckets
+    if (file.chunks && file.chunks.length > 0) {
+      for (const chunk of file.chunks) {
+        const b = db.storageBuckets.get(chunk.bucketId) || Array.from(db.storageBuckets.values()).find((x) => x.bucketName === chunk.bucketName);
+        if (b) {
+          b.usedStorageBytes += (chunk.chunkSizeBytes || 0);
+          b.objectCount = (b.objectCount || 0) + 1;
+          b.availableStorageBytes = Math.max(0, b.logicalQuotaBytes - b.usedStorageBytes);
+          await db.saveBucketToPostgres(b);
+        }
+      }
+    }
+
     console.log(`[VIDEO CHUNKED COMPLETE] Video "${video?.title || file.originalFilename}" (${file.totalSizeBytes} bytes across ${file.chunkCount} chunks) successfully published and ready for streaming.`);
 
     res.status(200).json({
@@ -1314,8 +1333,13 @@ app.post('/api/instagram/messages', (req: Request, res: Response) => {
 app.get(
   '/api/admin/overview',
   requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.AUDITOR),
-  (req: Request, res: Response) => {
-    res.json(adminService.getDashboardOverview());
+  async (req: Request, res: Response) => {
+    try {
+      const overview = await adminService.getDashboardOverviewAsync();
+      res.json(overview);
+    } catch {
+      res.json(adminService.getDashboardOverview());
+    }
   }
 );
 
@@ -1355,8 +1379,13 @@ app.delete(
 app.get(
   '/api/admin/buckets',
   requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.AUDITOR),
-  (req: Request, res: Response) => {
-    res.json(adminService.getBuckets());
+  async (req: Request, res: Response) => {
+    try {
+      const buckets = await adminService.getBucketsAsync();
+      res.json(buckets);
+    } catch {
+      res.json(adminService.getBuckets());
+    }
   }
 );
 

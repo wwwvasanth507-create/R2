@@ -75,4 +75,9 @@ export interface IStorageProvider {
    * Verify connectivity and credentials against a specific bucket
    */
   checkBucketHealth(bucketName: string): Promise<boolean>;
+
+  /**
+   * Calculate live total stored bytes and object count directly from storage provider
+   */
+  getBucketUsage(bucketName: string): Promise<{ objectCount: number; totalSizeBytes: number }>;
 }

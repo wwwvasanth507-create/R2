@@ -178,4 +178,28 @@ export class LocalStorageProvider implements IStorageProvider {
     const bucketPath = path.join(this.baseDir, bucketName);
     return fs.existsSync(bucketPath);
   }
+
+  async getBucketUsage(bucketName: string): Promise<{ objectCount: number; totalSizeBytes: number }> {
+    let totalBytes = 0;
+    let count = 0;
+    const bucketDir = path.join(this.baseDir, bucketName);
+    if (fs.existsSync(bucketDir)) {
+      const scanDir = (dir: string) => {
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              scanDir(full);
+            } else if (entry.isFile() && !entry.name.endsWith('.meta.json')) {
+              count++;
+              totalBytes += fs.statSync(full).size;
+            }
+          }
+        } catch {}
+      };
+      scanDir(bucketDir);
+    }
+    return { objectCount: count, totalSizeBytes: totalBytes };
+  }
 }

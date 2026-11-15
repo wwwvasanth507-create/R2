@@ -21,6 +21,11 @@ export class AdminService {
     private readonly storageManager: StorageManagerService
   ) { }
 
+  public async getDashboardOverviewAsync() {
+    await this.getBucketsAsync();
+    return this.getDashboardOverview();
+  }
+
   public getDashboardOverview() {
     const storageMetrics = this.storageManager.getStorageMetrics();
     const totalUsers = this.db.users.size;
@@ -159,6 +164,43 @@ export class AdminService {
   }
 
   // --- Bucket Management ---
+  public async getBucketsAsync(): Promise<IStorageBucket[]> {
+    for (const bkt of this.db.storageBuckets.values()) {
+      // 1. Calculate live sum from file chunks
+      const chunks = Array.from(this.db.fileChunks.values()).filter(
+        (c) => c.bucketName === bkt.bucketName || c.bucketId === bkt.id
+      );
+      const chunkBytes = chunks.reduce((acc, c) => acc + (c.chunkSizeBytes || 0), 0);
+      const chunkCount = chunks.length;
+
+      let liveBytes = chunkBytes;
+      let liveCount = chunkCount;
+
+      // 2. Query Cloudflare R2 provider directly for live cloud numbers
+      try {
+        const provider = this.storageManager.getProvider(bkt.storageAccountId);
+        if (provider && typeof (provider as any).getBucketUsage === 'function') {
+          const r2Usage = await (provider as any).getBucketUsage(bkt.bucketName);
+          if (r2Usage.totalSizeBytes > 0 || r2Usage.objectCount > 0) {
+            liveBytes = r2Usage.totalSizeBytes;
+            liveCount = r2Usage.objectCount;
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[STORAGE LIVE QUERY] Notice for bucket ${bkt.bucketName}:`, err.message);
+      }
+
+      if (liveBytes > 0 || liveCount > 0) {
+        bkt.usedStorageBytes = liveBytes;
+        bkt.objectCount = liveCount;
+        bkt.availableStorageBytes = Math.max(0, bkt.logicalQuotaBytes - liveBytes);
+        await this.db.saveBucketToPostgres(bkt);
+      }
+    }
+
+    return Array.from(this.db.storageBuckets.values()).sort((a, b) => a.priority - b.priority);
+  }
+
   public getBuckets(): IStorageBucket[] {
     return Array.from(this.db.storageBuckets.values()).sort((a, b) => a.priority - b.priority);
   }

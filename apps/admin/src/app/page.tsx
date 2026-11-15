@@ -34,6 +34,8 @@ interface BucketItem {
   account: string;
   quotaGiB: number;
   usedGiB: number;
+  usedBytes?: number;
+  objectCount?: number;
   priority: number;
   status: string;
   isEnabled: boolean;
@@ -63,7 +65,7 @@ interface AlertItem {
 export default function AdminDashboard() {
   // Auth State
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [adminUsername, setAdminUsername] = useState<string>('VASANTH V');
+  const [adminUsername, setAdminUsername] = useState<string>('vasanth013');
   const [adminPassword, setAdminPassword] = useState<string>('VASAnth@2008');
   const [loginError, setLoginError] = useState<string>('');
   const [authToken, setAuthToken] = useState<string>('');
@@ -102,7 +104,7 @@ export default function AdminDashboard() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Check existing session
+  // Check existing session & setup auto live sync
   useEffect(() => {
     const savedToken = localStorage.getItem('admin_token');
     const savedUser = localStorage.getItem('admin_user');
@@ -112,6 +114,15 @@ export default function AdminDashboard() {
       fetchDashboardData(savedToken);
     }
   }, []);
+
+  // Periodic Live Quota Refresh every 5 seconds
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const interval = setInterval(() => {
+      fetchDashboardData();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated, authToken]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -154,7 +165,7 @@ export default function AdminDashboard() {
       fetchDashboardData(data.tokens?.accessToken);
     } catch (err: any) {
       if (
-        (adminUsername.trim() === 'VASANTH V' || adminUsername.trim().toLowerCase() === 'vasanth v') &&
+        (adminUsername.trim() === 'VASANTH V' || adminUsername.trim().toLowerCase() === 'vasanth v' || adminUsername.trim().toLowerCase() === 'vasanth013') &&
         adminPassword === 'VASAnth@2008'
       ) {
         const mockToken = 'local_admin_jwt_' + Date.now();
@@ -194,6 +205,8 @@ export default function AdminDashboard() {
             account: b.storageAccountId || 'Cloudflare R2',
             quotaGiB: b.logicalQuotaBytes ? b.logicalQuotaBytes / (1024 * 1024 * 1024) : 8,
             usedGiB: b.usedStorageBytes ? b.usedStorageBytes / (1024 * 1024 * 1024) : 0,
+            usedBytes: b.usedStorageBytes || 0,
+            objectCount: b.objectCount || 0,
             priority: b.priority || 1,
             status: b.healthStatus || 'HEALTHY',
             isEnabled: b.isEnabled !== false
@@ -622,6 +635,29 @@ export default function AdminDashboard() {
           >
             ● R2 ALLOCATION ENGINE ACTIVE
           </span>
+          <button
+            onClick={() => {
+              fetchDashboardData();
+              showToast('Syncing live Cloudflare R2 bucket storage...');
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 14px',
+              background: 'rgba(16, 185, 129, 0.15)',
+              border: '1px solid #10b981',
+              color: '#34d399',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 700,
+              cursor: 'pointer'
+            }}
+            title="Refresh Live Quota from Cloudflare R2"
+          >
+            <RefreshCw size={14} />
+            <span>Live Sync</span>
+          </button>
           <div
             style={{
               padding: '6px 14px',
@@ -757,7 +793,9 @@ export default function AdminDashboard() {
                 <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '12px', padding: '20px' }}>
                   <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>Total Storage Managed</div>
                   <div style={{ fontSize: '28px', fontWeight: 800, color: '#fff' }}>{totalQuotaGiB} GiB</div>
-                  <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>{totalUsedGiB.toFixed(1)} GiB utilized</div>
+                  <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
+                    {totalUsedGiB >= 0.01 ? `${totalUsedGiB.toFixed(2)} GiB` : `${(totalUsedGiB * 1024).toFixed(1)} MB`} utilized
+                  </div>
                 </div>
                 <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '12px', padding: '20px' }}>
                   <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '4px' }}>Egress Bandwidth Fee</div>
@@ -835,7 +873,7 @@ export default function AdminDashboard() {
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                               <span style={{ fontSize: '13px', color: '#fff', fontWeight: 600 }}>
-                                {b.usedGiB.toFixed(1)} / {b.quotaGiB} GiB ({pct}%)
+                                {b.usedGiB >= 0.01 ? `${b.usedGiB.toFixed(2)} GiB` : `${((b.usedBytes || 0) / (1024 * 1024)).toFixed(1)} MB`} / {b.quotaGiB} GiB ({pct}%) • {b.objectCount || 0} objects
                               </span>
                               <button
                                 onClick={() => handleDeleteBucket(b.id, b.name)}
@@ -946,7 +984,9 @@ export default function AdminDashboard() {
                           <td style={{ padding: '14px 16px', fontWeight: 600 }}>{b.name}</td>
                           <td style={{ padding: '14px 16px', color: '#94a3b8' }}>{b.account}</td>
                           <td style={{ padding: '14px 16px' }}>{b.quotaGiB} GiB (Application Standard)</td>
-                          <td style={{ padding: '14px 16px' }}>{b.usedGiB.toFixed(1)} GiB</td>
+                          <td style={{ padding: '14px 16px' }}>
+                            {b.usedGiB >= 0.01 ? `${b.usedGiB.toFixed(2)} GiB` : `${((b.usedBytes || 0) / (1024 * 1024)).toFixed(1)} MB`} ({b.objectCount || 0} objects)
+                          </td>
                           <td style={{ padding: '14px 16px' }}>
                             <span
                               style={{

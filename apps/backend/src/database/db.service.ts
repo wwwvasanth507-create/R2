@@ -291,6 +291,23 @@ export class DatabaseService {
           }
         }
         console.log(`[POSTGRES] Synchronized ${fileRes.rows.length} real files and ${chunkRes.rows.length} chunks from database.`);
+
+        // Reconcile and calculate exact live usage for every bucket from real chunks & files
+        for (const bucket of this.storageBuckets.values()) {
+          const bucketChunks = Array.from(this.fileChunks.values()).filter(
+            (c) => c.bucketName === bucket.bucketName || c.bucketId === bucket.id
+          );
+          const chunkTotalBytes = bucketChunks.reduce((acc, c) => acc + (c.chunkSizeBytes || 0), 0);
+          const chunkCount = bucketChunks.length;
+
+          if (chunkTotalBytes > 0 || chunkCount > 0) {
+            bucket.usedStorageBytes = Math.max(bucket.usedStorageBytes, chunkTotalBytes);
+            bucket.objectCount = Math.max(bucket.objectCount, chunkCount);
+            bucket.availableStorageBytes = Math.max(0, bucket.logicalQuotaBytes - bucket.usedStorageBytes);
+            await this.saveBucketToPostgres(bucket);
+          }
+        }
+        console.log(`[POSTGRES] Live storage reconciled for ${this.storageBuckets.size} buckets.`);
       }
     } catch (err: any) {
       console.warn('[POSTGRES] Storage synchronization notice:', err.message);
@@ -440,11 +457,10 @@ export class DatabaseService {
     try {
       await this.pgPool.query(
         `UPDATE storage_buckets
-         SET used_storage_bytes = $1, available_storage_bytes = $2, object_count = $3, updated_at = NOW()
-         WHERE id::text = $4 OR bucket_name = $5`,
+         SET used_storage_bytes = $1, object_count = $2, updated_at = NOW()
+         WHERE id::text = $3 OR bucket_name = $4`,
         [
           bucket.usedStorageBytes,
-          bucket.availableStorageBytes,
           bucket.objectCount || 0,
           bucket.id,
           bucket.bucketName
