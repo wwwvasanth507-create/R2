@@ -1,15 +1,18 @@
--- Seed Initial Admin User and Storage Buckets
+-- Seed Initial Admin User and Storage Accounts
 INSERT INTO users (id, email, username, password_hash, display_name, role, status, is_verified)
 VALUES (
   'a0000000-0000-0000-0000-000000000001',
-  'admin@platform.io',
-  'admin',
-  'admin123', -- In production, checked by auth service
-  'System Super Administrator',
+  'vasanth@wavemusic.dpdns.org',
+  'VASANTH V',
+  'VASAnth@2008',
+  'VASANTH V',
   'SUPER_ADMIN',
   'ACTIVE',
   TRUE
-) ON CONFLICT (email) DO NOTHING;
+) ON CONFLICT (email) DO UPDATE SET 
+  username = 'VASANTH V',
+  password_hash = 'VASAnth@2008',
+  display_name = 'VASANTH V';
 
 INSERT INTO users (id, email, username, password_hash, display_name, role, status, is_verified)
 VALUES (
@@ -46,39 +49,5 @@ VALUES (
   'ACTIVE'
 ) ON CONFLICT DO NOTHING;
 
--- Initial Logical 8 GiB Buckets
-INSERT INTO storage_buckets (id, bucket_name, storage_account_id, logical_quota_bytes, used_storage_bytes, priority, health_status, is_enabled)
-VALUES (
-  'c0000000-0000-0000-0000-000000000001',
-  'prod-media-alpha-1',
-  'b0000000-0000-0000-0000-000000000001',
-  8589934592, -- 8 GiB
-  0,
-  1,
-  'HEALTHY',
-  TRUE
-) ON CONFLICT DO NOTHING;
-
-INSERT INTO storage_buckets (id, bucket_name, storage_account_id, logical_quota_bytes, used_storage_bytes, priority, health_status, is_enabled)
-VALUES (
-  'c0000000-0000-0000-0000-000000000002',
-  'prod-media-alpha-2',
-  'b0000000-0000-0000-0000-000000000001',
-  8589934592, -- 8 GiB
-  0,
-  2,
-  'HEALTHY',
-  TRUE
-) ON CONFLICT DO NOTHING;
-
-INSERT INTO storage_buckets (id, bucket_name, storage_account_id, logical_quota_bytes, used_storage_bytes, priority, health_status, is_enabled)
-VALUES (
-  'c0000000-0000-0000-0000-000000000003',
-  'prod-media-beta-1',
-  'b0000000-0000-0000-0000-000000000002',
-  8589934592, -- 8 GiB
-  0,
-  3,
-  'HEALTHY',
-  TRUE
-) ON CONFLICT DO NOTHING;
+-- Storage buckets are dynamically added via Admin Console (Clean State)
+DELETE FROM storage_buckets WHERE bucket_name LIKE 'prod-media-%';

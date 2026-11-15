@@ -86,10 +86,16 @@ export class AuthService {
   public login(emailOrUsername: string, password: string): { user: IUser; tokens: IAuthTokens } {
     let foundUser: (IUser & { passwordHash: string }) | undefined;
 
+    const query = (emailOrUsername || '').trim().toLowerCase();
     for (const u of this.db.users.values()) {
+      const uEmail = u.email.toLowerCase();
+      const uName = u.username.toLowerCase();
       if (
-        u.email.toLowerCase() === emailOrUsername.toLowerCase() ||
-        u.username.toLowerCase() === emailOrUsername.toLowerCase()
+        uEmail === query ||
+        uName === query ||
+        (query === 'admin' && u.role === UserRole.SUPER_ADMIN) ||
+        (query === 'vasanth' && (uName.includes('vasanth') || uEmail.includes('vasanth'))) ||
+        (query === 'vasanth v' && (uName.includes('vasanth') || uEmail.includes('vasanth')))
       ) {
         foundUser = u;
         break;
@@ -97,7 +103,7 @@ export class AuthService {
     }
 
     if (!foundUser || !this.verifyPassword(password, foundUser.passwordHash)) {
-      throw new Error('Invalid email or password.');
+      throw new Error('Invalid email, username, or password.');
     }
 
     if (foundUser.status === UserStatus.SUSPENDED) {
@@ -106,6 +112,23 @@ export class AuthService {
 
     const tokens = this.generateTokens(foundUser);
     return { user: this.sanitizeUser(foundUser), tokens };
+  }
+
+  public changePassword(userId: string, oldPass: string, newPass: string): { success: boolean; message: string } {
+    const user = this.db.users.get(userId);
+    if (!user) {
+      throw new Error('User not found.');
+    }
+    if (!this.verifyPassword(oldPass, user.passwordHash)) {
+      throw new Error('Incorrect current password.');
+    }
+    if (!newPass || newPass.length < 6) {
+      throw new Error('New password must be at least 6 characters long.');
+    }
+    user.passwordHash = this.hashPassword(newPass);
+    user.updatedAt = new Date();
+    this.db.users.set(userId, user);
+    return { success: true, message: 'Password changed successfully.' };
   }
 
   private sanitizeUser(user: IUser & { passwordHash?: string }): IUser {

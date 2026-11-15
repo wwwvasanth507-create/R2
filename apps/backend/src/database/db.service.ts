@@ -76,12 +76,12 @@ export class DatabaseService {
     // 1. Initial Users (Super Admin, Creator, Normal User)
     const adminUser: IUser & { passwordHash: string } = {
       id: 'user-admin-1',
-      email: 'admin@platform.io',
-      username: 'admin',
-      displayName: 'System Super Administrator',
+      email: 'vasanth@wavemusic.dpdns.org',
+      username: 'VASANTH V',
+      displayName: 'VASANTH V',
       role: UserRole.SUPER_ADMIN,
       status: UserStatus.ACTIVE,
-      passwordHash: 'admin123', // In production, verified with hash
+      passwordHash: 'VASAnth@2008',
       avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
       isVerified: true,
       createdAt: new Date(),
@@ -138,63 +138,8 @@ export class DatabaseService {
     };
     this.storageAccounts.set(acc2.id, acc2);
 
-    // Buckets with strict 8 GiB Logical Quota
-    const bucket1: IStorageBucket = {
-      id: 'bkt-alpha-media-1',
-      bucketName: 'prod-media-alpha-1',
-      storageAccountId: acc1.id,
-      region: 'auto',
-      logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES, // 8 GiB = 8,589,934,592 bytes
-      usedStorageBytes: 1073741824, // 1 GiB used
-      reservedStorageBytes: 0,
-      availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES - 1073741824,
-      priority: 1,
-      healthStatus: BucketHealthStatus.HEALTHY,
-      isEnabled: true,
-      objectCount: 42,
-      lastValidatedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.storageBuckets.set(bucket1.id, bucket1);
-
-    const bucket2: IStorageBucket = {
-      id: 'bkt-alpha-media-2',
-      bucketName: 'prod-media-alpha-2',
-      storageAccountId: acc1.id,
-      region: 'auto',
-      logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES, // 8 GiB
-      usedStorageBytes: 0,
-      reservedStorageBytes: 0,
-      availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
-      priority: 2,
-      healthStatus: BucketHealthStatus.HEALTHY,
-      isEnabled: true,
-      objectCount: 0,
-      lastValidatedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.storageBuckets.set(bucket2.id, bucket2);
-
-    const bucket3: IStorageBucket = {
-      id: 'bkt-beta-media-1',
-      bucketName: 'prod-media-beta-1',
-      storageAccountId: acc2.id,
-      region: 'auto',
-      logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES, // 8 GiB
-      usedStorageBytes: 0,
-      reservedStorageBytes: 0,
-      availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
-      priority: 3,
-      healthStatus: BucketHealthStatus.HEALTHY,
-      isEnabled: true,
-      objectCount: 0,
-      lastValidatedAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    this.storageBuckets.set(bucket3.id, bucket3);
+    // Storage Buckets initially empty - managed via Admin Dashboard
+    // Users can connect Cloudflare R2 accounts and allocate production buckets freely.
 
     // 3. Seed Netflix Content (Genres, Movies, Series, Episodes)
     const sciFiGenre: IGenre = { id: 'g-scifi', name: 'Sci-Fi & Cyberpunk', slug: 'sci-fi' };

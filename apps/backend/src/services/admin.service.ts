@@ -127,6 +127,13 @@ export class AdminService {
     return bucket;
   }
 
+  public deleteBucket(bucketId: string): { success: boolean; id: string } {
+    const bucket = this.db.storageBuckets.get(bucketId);
+    if (!bucket) throw new Error('Bucket not found.');
+    this.db.storageBuckets.delete(bucketId);
+    return { success: true, id: bucketId };
+  }
+
   // --- Alerts ---
   public getAlerts(): IStorageAlert[] {
     return Array.from(this.db.storageAlerts.values()).sort(

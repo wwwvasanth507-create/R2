@@ -132,6 +132,21 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   }
 });
 
+app.post('/api/auth/change-password', (req: Request, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const { userId, oldPassword, newPassword } = req.body;
+    const targetUserId = userId || (authUser ? authUser.sub : null);
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+    const result = authService.changePassword(targetUserId, oldPassword, newPassword);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.get('/api/auth/me', (req: Request, res: Response) => {
   const authUser = getAuthUser(req);
   if (!authUser) {
@@ -436,6 +451,18 @@ app.patch(
     try {
       const bucket = adminService.updateBucket(req.params.id, req.body);
       res.json(bucket);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
+
+app.delete(
+  '/api/admin/buckets/:id',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN),
+  (req: Request, res: Response) => {
+    try {
+      res.json(adminService.deleteBucket(req.params.id));
     } catch (err: any) {
       res.status(400).json({ error: err.message });
     }

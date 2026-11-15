@@ -1,1026 +1,1196 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  Film,
-  Tv,
-  Youtube,
-  Instagram,
-  UploadCloud,
-  Play,
-  Heart,
-  MessageCircle,
-  Share2,
-  Bookmark,
-  Bell,
+  Menu,
   Search,
-  Check,
-  TrendingUp,
-  Clock,
+  Mic,
+  Video,
+  Bell,
+  User,
+  Home as HomeIcon,
   Compass,
+  PlaySquare,
+  Clock,
   ThumbsUp,
   ThumbsDown,
-  UserCheck,
-  Info,
+  Share2,
+  Bookmark,
+  BookmarkCheck,
+  Check,
+  MoreVertical,
+  Flame,
+  Music,
+  Gamepad2,
+  Newspaper,
+  Radio,
+  Tv,
+  ListVideo,
+  Settings,
+  HelpCircle,
+  MessageSquare,
+  CheckCircle2,
   X,
+  Plus,
+  Lock,
+  Key,
+  LogOut,
+  Send,
   Volume2,
   VolumeX,
-  ChevronLeft,
+  Maximize,
+  Minimize,
+  Download,
+  FolderPlus,
+  Play,
+  Pause,
+  RotateCcw,
+  FastForward,
   ChevronRight,
-  Send,
-  Plus
+  ChevronDown
 } from 'lucide-react';
-import { VideoPlayer } from '../components/video-player';
 import { ChunkUploader } from '../components/chunk-uploader';
 
-type ActiveTab = 'netflix' | 'youtube' | 'instagram' | 'uploader';
+const API_BASE = typeof window !== 'undefined' && window.location.hostname.includes('wavemusic')
+  ? 'https://api.wavemusic.dpdns.org'
+  : 'http://localhost:4000';
 
-interface MovieItem {
-  id: string;
-  title: string;
-  year: string;
-  rating: string;
-  genre: string;
-  poster: string;
-  backdrop: string;
-  videoUrl: string;
-  description: string;
-  duration: string;
-  cast: string[];
-}
-
-interface YouTubeVideo {
+interface VideoItem {
   id: string;
   title: string;
   channel: string;
+  channelAvatar: string;
   subscribers: string;
   views: string;
   time: string;
   duration: string;
-  thumb: string;
-  avatar: string;
+  thumbnail: string;
   videoUrl: string;
+  category: string;
   description: string;
-  likes: number;
+  likesCount: number;
+  commentsCount: number;
+  verified?: boolean;
 }
 
-interface YouTubeShort {
+interface ShortItem {
   id: string;
   title: string;
+  channel: string;
+  channelAvatar: string;
   views: string;
-  poster: string;
   videoUrl: string;
   likes: number;
   comments: number;
+  musicTitle: string;
 }
 
-interface InstagramPost {
+interface CommentItem {
   id: string;
   user: string;
   avatar: string;
-  location: string;
-  image: string;
-  caption: string;
+  time: string;
+  text: string;
   likes: number;
-  comments: Array<{ user: string; text: string }>;
-  isReel?: boolean;
-  videoUrl?: string;
+  isLiked?: boolean;
 }
 
-interface StoryItem {
-  id: string;
-  name: string;
-  avatar: string;
-  storyImage: string;
-  isMine?: boolean;
-}
-
-export default function Home() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('netflix');
-  const [activeVideo, setActiveVideo] = useState<{ title: string; url: string; poster?: string } | null>(null);
+export default function YouTubePlatform() {
+  // Navigation & View States
+  const [sidebarExpanded, setSidebarExpanded] = useState(true);
+  const [currentView, setCurrentView] = useState<'home' | 'watch' | 'shorts' | 'watchLater' | 'liked'>('home');
+  const [selectedCategory, setSelectedCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedGenre, setSelectedGenre] = useState<string>('all');
-  
-  // Netflix State
-  const [watchlist, setWatchlist] = useState<Record<string, boolean>>({
-    'mov-stellar': true
-  });
-  const [selectedMovieDetail, setSelectedMovieDetail] = useState<MovieItem | null>(null);
 
-  // YouTube State
+  // Watch Page State
+  const [activeVideo, setActiveVideo] = useState<VideoItem | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isCinemaMode, setIsCinemaMode] = useState(false);
   const [isSubscribed, setIsSubscribed] = useState(false);
-  const [ytLikes, setYtLikes] = useState<Record<string, { liked: boolean; count: number }>>({
-    'yt-1': { liked: false, count: 1240 },
-    'yt-2': { liked: true, count: 3890 }
-  });
-  const [ytComments, setYtComments] = useState<Array<{ user: string; text: string; time: string }>>([
-    { user: 'Alex Rivera', text: 'The multi-bucket sequential spillover is genius! Zero egress cost on R2 makes this viable.', time: '2 hours ago' },
-    { user: 'DevSre_Pro', text: 'Tested the 256 MiB chunking with range requests. Virtual assembly works flawlessly.', time: '5 hours ago' }
+  const [isLiked, setIsLiked] = useState(false);
+  const [isDisliked, setIsDisliked] = useState(false);
+  const [videoLikes, setVideoLikes] = useState<number>(0);
+  const [isSavedWatchLater, setIsSavedWatchLater] = useState(false);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+
+  // Video Element Ref
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [videoProgress, setVideoProgress] = useState(0);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0);
+  const [videoVolume, setVideoVolume] = useState(0.85);
+  const [isMuted, setIsMuted] = useState(false);
+
+  // Comments State
+  const [comments, setComments] = useState<CommentItem[]>([
+    {
+      id: 'c1',
+      user: 'TechArchitect_IN',
+      avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100',
+      time: '1 hour ago',
+      text: 'The 8 GiB strict logical quota design per R2 bucket avoids quota exhaustion while guaranteeing 0 egress charges! Brilliant execution.',
+      likes: 84
+    },
+    {
+      id: 'c2',
+      user: 'CloudDevOps_Specialist',
+      avatar: 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?w=100',
+      time: '3 hours ago',
+      text: 'Tested the 256 MiB multi-bucket scatter-gather streaming. The byte-range gateway handles seeking with zero stutter.',
+      likes: 42
+    },
+    {
+      id: 'c3',
+      user: 'TamilMediaFan',
+      avatar: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=100',
+      time: '5 hours ago',
+      text: 'Super smooth YouTube UI experience! Loved the cinema mode and dark mode styling.',
+      likes: 19
+    }
   ]);
-  const [newCommentText, setNewCommentText] = useState('');
+  const [newCommentInput, setNewCommentInput] = useState('');
 
-  // Instagram State
-  const [igSubTab, setIgSubTab] = useState<'feed' | 'reels'>('feed');
-  const [likedPosts, setLikedPosts] = useState<Record<string, boolean>>({
-    'p-1': true
-  });
-  const [postLikesCount, setPostLikesCount] = useState<Record<string, number>>({
-    'p-1': 3412,
-    'p-2': 1890,
-    'reel-1': 14200
-  });
-  const [activeStory, setActiveStory] = useState<StoryItem | null>(null);
-  const [storyProgress, setStoryProgress] = useState(0);
-  const [openPostComments, setOpenPostComments] = useState<string | null>(null);
-  const [postCommentInput, setPostCommentInput] = useState('');
+  // Shorts State
+  const [currentShortIndex, setCurrentShortIndex] = useState(0);
+  const [shortsLiked, setShortsLiked] = useState<Record<string, boolean>>({});
 
-  // Story Timer
+  // Auth & User State
+  const [currentUser, setCurrentUser] = useState<{
+    id: string;
+    username: string;
+    displayName: string;
+    email: string;
+    avatarUrl: string;
+  } | null>(null);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+
+  // Auth Modals
+  const [showSignInModal, setShowSignInModal] = useState(false);
+  const [showRegisterModal, setShowRegisterModal] = useState(false);
+  const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+
+  // Form Fields
+  const [authLoginId, setAuthLoginId] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  const [regUsername, setRegUsername] = useState('');
+  const [regDisplayName, setRegDisplayName] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regConfirmPassword, setRegConfirmPassword] = useState('');
+
+  const [pwdCurrent, setPwdCurrent] = useState('');
+  const [pwdNew, setPwdNew] = useState('');
+  const [pwdConfirm, setPwdConfirm] = useState('');
+
+  // Toast
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  // Watch Later & Liked Lists
+  const [watchLaterList, setWatchLaterList] = useState<string[]>([]);
+  const [likedList, setLikedList] = useState<string[]>([]);
+
+  // Sample Authentic YouTube Video Library
+  const videoDatabase: VideoItem[] = [
+    {
+      id: 'yt-r2-deepdive',
+      title: 'Building a Petabyte-Scale Media Engine with Cloudflare R2 & Multi-Bucket Allocation',
+      channel: 'Cloud Architecture & Systems',
+      channelAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100',
+      subscribers: '1.24M subscribers',
+      views: '482K views',
+      time: '2 days ago',
+      duration: '18:45',
+      thumbnail: 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=800&q=80',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+      category: 'Cloudflare R2',
+      description: 'Complete breakdown of building a high-throughput video streaming infrastructure using Cloudflare R2 object storage with 0 egress costs, dynamic 8 GiB bucket allocation, SHA-256 chunk verification, and HTTP range streaming gateways.\n\nTimestamps:\n0:00 - Introduction & Cloud Storage Dilemma\n3:20 - R2 Architecture & Free Egress Policy\n7:45 - 8 GiB Logical Bucket Quotas & Spillover\n12:30 - Distributed 256 MiB Chunk Assembly\n16:10 - Live Production Benchmarks',
+      likesCount: 24500,
+      commentsCount: 382,
+      verified: true
+    },
+    {
+      id: 'yt-distributed-systems',
+      title: 'Distributed Video Streaming Architecture: Range Requests & Virtual Byte Assembly',
+      channel: 'Systems Engineering Academy',
+      channelAvatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100',
+      subscribers: '890K subscribers',
+      views: '315K views',
+      time: '5 days ago',
+      duration: '24:12',
+      thumbnail: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=800&q=80',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
+      category: 'Distributed Systems',
+      description: 'How to assemble multi-gigabyte video files on the fly from multiple independent S3-compatible buckets without pre-downloading the entire video file to disk.',
+      likesCount: 18200,
+      commentsCount: 240,
+      verified: true
+    },
+    {
+      id: 'yt-tamil-music-beats',
+      title: 'Tamil Cinematic Beats & Acoustic Sessions 2026 (Official WaveMusic Live)',
+      channel: 'WaveMusic Originals',
+      channelAvatar: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=100',
+      subscribers: '2.8M subscribers',
+      views: '1.4M views',
+      time: '1 week ago',
+      duration: '45:30',
+      thumbnail: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+      category: 'Music',
+      description: 'Immerse in pure acoustic instruments, violin melodies, and bass grooves produced exclusively for WaveMusic listeners worldwide.',
+      likesCount: 95400,
+      commentsCount: 1420,
+      verified: true
+    },
+    {
+      id: 'yt-fullstack-guide',
+      title: 'Full Stack Next.js 14 + NestJS + PostgreSQL + Redis Real-Time Architecture',
+      channel: 'Modern Code Lab',
+      channelAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=100',
+      subscribers: '650K subscribers',
+      views: '190K views',
+      time: '2 weeks ago',
+      duration: '32:10',
+      thumbnail: 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=800&q=80',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
+      category: 'Coding & Dev',
+      description: 'Step-by-step masterclass covering microservices, RBAC security, background workers with BullMQ, and Next.js frontend optimization.',
+      likesCount: 12100,
+      commentsCount: 198,
+      verified: true
+    },
+    {
+      id: 'yt-hardware-review',
+      title: 'Next-Gen Video Processing Workstations: NVENC Hardware Transcoding Speed Test',
+      channel: 'Hardware Universe',
+      channelAvatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100',
+      subscribers: '1.5M subscribers',
+      views: '540K views',
+      time: '3 weeks ago',
+      duration: '14:20',
+      thumbnail: 'https://images.unsplash.com/photo-1591488320449-011701bb6704?w=800&q=80',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
+      category: 'Tech Reviews',
+      description: 'Testing 4K H.264 vs H.265 vs AV1 transcoding speeds across dedicated GPU clusters with automated FFmpeg worker pipelines.',
+      likesCount: 31000,
+      commentsCount: 450,
+      verified: true
+    },
+    {
+      id: 'yt-cyber-security',
+      title: 'Zero Trust Object Storage: Encrypting S3 Manifests & Signed URLs in Production',
+      channel: 'Security Frontier',
+      channelAvatar: 'https://images.unsplash.com/photo-1519085360753-af0119f7cbe7?w=100',
+      subscribers: '420K subscribers',
+      views: '98K views',
+      time: '1 month ago',
+      duration: '21:05',
+      thumbnail: 'https://images.unsplash.com/photo-1563986768609-322da13575f3?w=800&q=80',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyBlazes.mp4',
+      category: 'Cloudflare R2',
+      description: 'Deep dive into AES-256-GCM encrypted bucket credentials, time-limited presigned URLs, and role-based access control.',
+      likesCount: 7800,
+      commentsCount: 88,
+      verified: true
+    }
+  ];
+
+  const shortsDatabase: ShortItem[] = [
+    {
+      id: 'sh-1',
+      title: 'Cloudflare R2 Egress Cost Explained in 45 Seconds! 🚀',
+      channel: 'Cloud Architecture & Systems',
+      channelAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100',
+      views: '1.2M views',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerMeltdowns.mp4',
+      likes: 64200,
+      comments: 520,
+      musicTitle: 'Original Audio • Cloud Architecture'
+    },
+    {
+      id: 'sh-2',
+      title: 'Why 8 GB Bucket Quotas Prevent Billing Nightmares 💡',
+      channel: 'Systems Engineering Academy',
+      channelAvatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100',
+      views: '840K views',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+      likes: 41800,
+      comments: 310,
+      musicTitle: 'Systems Audio • Synth Wave'
+    },
+    {
+      id: 'sh-3',
+      title: 'Instant 256 MiB Chunk Verification with SHA-256 🔥',
+      channel: 'Modern Code Lab',
+      channelAvatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=100',
+      views: '520K views',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+      likes: 29000,
+      comments: 180,
+      musicTitle: 'Cyberpunk Beats 2026'
+    }
+  ];
+
+  const categories = [
+    'All',
+    'Cloudflare R2',
+    'Distributed Systems',
+    'Music',
+    'Coding & Dev',
+    'Tech Reviews',
+    'Tamil Songs',
+    'Podcasts',
+    'Live Streams',
+    'Shorts'
+  ];
+
+  // Restore session
   useEffect(() => {
-    if (!activeStory) {
-      setStoryProgress(0);
+    const savedUser = localStorage.getItem('platform_user');
+    if (savedUser) {
+      try {
+        setCurrentUser(JSON.parse(savedUser));
+      } catch {}
+    }
+  }, []);
+
+  // Filter videos
+  const filteredVideos = videoDatabase.filter((v) => {
+    const matchesCategory = selectedCategory === 'All' || v.category === selectedCategory;
+    const matchesSearch =
+      searchQuery === '' ||
+      v.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      v.channel.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      v.description.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesCategory && matchesSearch;
+  });
+
+  // Watch video handler
+  const handleWatchVideo = (video: VideoItem) => {
+    setActiveVideo(video);
+    setCurrentView('watch');
+    setIsPlaying(true);
+    setVideoLikes(video.likesCount);
+    setIsLiked(likedList.includes(video.id));
+    setIsSavedWatchLater(watchLaterList.includes(video.id));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // Video Player Controls
+  const togglePlay = () => {
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current.play();
+      setIsPlaying(true);
+    } else {
+      videoRef.current.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  const handleTimeUpdate = () => {
+    if (!videoRef.current) return;
+    setVideoCurrentTime(videoRef.current.currentTime);
+    setVideoDuration(videoRef.current.duration || 0);
+    setVideoProgress((videoRef.current.currentTime / (videoRef.current.duration || 1)) * 100);
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!videoRef.current) return;
+    const seekTime = (parseFloat(e.target.value) / 100) * (videoRef.current.duration || 0);
+    videoRef.current.currentTime = seekTime;
+    setVideoProgress(parseFloat(e.target.value));
+  };
+
+  const formatDuration = (seconds: number) => {
+    if (isNaN(seconds)) return '0:00';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  // Like & Dislike
+  const toggleLike = () => {
+    if (!activeVideo) return;
+    if (isLiked) {
+      setIsLiked(false);
+      setVideoLikes(prev => prev - 1);
+      setLikedList(prev => prev.filter(id => id !== activeVideo.id));
+    } else {
+      setIsLiked(true);
+      setIsDisliked(false);
+      setVideoLikes(prev => prev + 1);
+      setLikedList(prev => [...prev, activeVideo.id]);
+      showToast('Added to Liked Videos');
+    }
+  };
+
+  const toggleDislike = () => {
+    if (isDisliked) {
+      setIsDisliked(false);
+    } else {
+      setIsDisliked(true);
+      if (isLiked) {
+        setIsLiked(false);
+        setVideoLikes(prev => prev - 1);
+      }
+    }
+  };
+
+  // Save to Watch Later
+  const toggleWatchLater = () => {
+    if (!activeVideo) return;
+    if (isSavedWatchLater) {
+      setIsSavedWatchLater(false);
+      setWatchLaterList(prev => prev.filter(id => id !== activeVideo.id));
+      showToast('Removed from Watch Later');
+    } else {
+      setIsSavedWatchLater(true);
+      setWatchLaterList(prev => [...prev, activeVideo.id]);
+      showToast('Saved to Watch Later');
+    }
+  };
+
+  // Share
+  const handleShare = () => {
+    if (!activeVideo) return;
+    const shareUrl = `${window.location.origin}/watch?v=${activeVideo.id}`;
+    navigator.clipboard.writeText(shareUrl);
+    showToast('Video link copied to clipboard!');
+  };
+
+  // Post Comment
+  const handlePostComment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCommentInput.trim()) return;
+
+    const newComment: CommentItem = {
+      id: `c-${Date.now()}`,
+      user: currentUser ? currentUser.displayName : 'Guest User',
+      avatar: currentUser?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100',
+      time: 'Just now',
+      text: newCommentInput.trim(),
+      likes: 0
+    };
+
+    setComments(prev => [newComment, ...prev]);
+    setNewCommentInput('');
+    showToast('Comment posted!');
+  };
+
+  // --- Auth Handlers ---
+
+  // Sign In Handler
+  const handleSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          emailOrUsername: authLoginId.trim(),
+          password: authPassword
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Login failed. Please check your credentials.');
+      }
+
+      const userObj = {
+        id: data.user.id,
+        username: data.user.username,
+        displayName: data.user.displayName || data.user.username,
+        email: data.user.email,
+        avatarUrl: data.user.avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.user.username}`
+      };
+
+      setCurrentUser(userObj);
+      localStorage.setItem('platform_user', JSON.stringify(userObj));
+      localStorage.setItem('platform_token', data.tokens.accessToken);
+      setShowSignInModal(false);
+      setAuthLoginId('');
+      setAuthPassword('');
+      showToast(`Welcome back, ${userObj.displayName}!`);
+    } catch (err: any) {
+      setAuthError(err.message || 'Unable to sign in. Verify your username & password.');
+    }
+  };
+
+  // Register Handler (Create Login ID)
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+
+    if (regPassword !== regConfirmPassword) {
+      setAuthError('Passwords do not match.');
       return;
     }
-    const interval = setInterval(() => {
-      setStoryProgress((prev) => {
-        if (prev >= 100) {
-          setActiveStory(null);
-          return 0;
-        }
-        return prev + 2;
+    if (regPassword.length < 6) {
+      setAuthError('Password must be at least 6 characters.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: regUsername.trim(),
+          displayName: regDisplayName.trim() || regUsername.trim(),
+          email: regEmail.trim(),
+          password: regPassword
+        })
       });
-    }, 100);
-    return () => clearInterval(interval);
-  }, [activeStory]);
 
-  // Catalog Data (Pristine High-Definition Creative Commons & Public CDN Streams)
-  const moviesCatalog: MovieItem[] = [
-    {
-      id: 'mov-stellar',
-      title: 'Stellar Horizon: 2099',
-      year: '2026',
-      rating: 'PG-13',
-      genre: 'sci-fi',
-      duration: '2h 22m',
-      poster: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=500',
-      backdrop: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-      description: 'An expedition beyond the solar boundary encounters an ancient spatial anomaly that alters time and memory. Streamed with multi-bitrate adaptive ABR and multi-channel audio.',
-      cast: ['David Chen', 'Elena Rostova', 'Marcus Thorne', 'Aria Sterling']
-    },
-    {
-      id: 'ser-neo',
-      title: 'Neon Odyssey',
-      year: '2025',
-      rating: 'TV-MA',
-      genre: 'cyberpunk',
-      duration: 'Season 1 • 8 Episodes',
-      poster: 'https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=500',
-      backdrop: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1600',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-      description: 'Under the perpetual neon rain of a synthetic metropolis, rogue detectives uncover a covert algorithmic rebellion in the cybernetic underworld.',
-      cast: ['Ren Takahashi', 'Maya Lin', 'Caleb Vance']
-    },
-    {
-      id: 'mov-cyber',
-      title: 'Cyberpunk Chronicles',
-      year: '2026',
-      rating: 'TV-MA',
-      genre: 'action',
-      duration: '1h 58m',
-      poster: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=500',
-      backdrop: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackSeeTheWorld.mp4',
-      description: 'In an augmented society governed by autonomous neural corporations, a freelance operative takes on an impossible espionage contract.',
-      cast: ['Vincent Cruz', 'Kira Sato', 'Julian Drake']
-    },
-    {
-      id: 'mov-orbital',
-      title: 'The Orbital Station',
-      year: '2024',
-      rating: 'PG-13',
-      genre: 'drama',
-      duration: '2h 10m',
-      poster: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=500',
-      backdrop: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1600',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-      description: 'A psychological thriller tracking the final 72 hours of an international research crew stranded in deep low-earth orbit.',
-      cast: ['Sarah Jenkins', 'Arthur Campbell', 'Nadia Volkov']
-    }
-  ];
-
-  const youtubeVideos: YouTubeVideo[] = [
-    {
-      id: 'yt-1',
-      title: 'Building a Distributed 20GB Video Storage Engine with Cloudflare R2',
-      channel: 'Cinematic Studios Official',
-      subscribers: '145K',
-      views: '12.4K views',
-      time: '3 hours ago',
-      duration: '14:20',
-      thumb: 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-      description: 'Architectural walkthrough of multi-account Cloudflare R2 allocation, 8 GiB logical quotas, and RFC 7233 scatter-gather streaming.',
-      likes: 1240
-    },
-    {
-      id: 'yt-2',
-      title: 'Mastering HTTP Range Requests & Virtual Multi-Bucket Reassembly',
-      channel: 'Architecture Lab',
-      subscribers: '89K',
-      views: '28.1K views',
-      time: '1 day ago',
-      duration: '22:45',
-      thumb: 'https://images.unsplash.com/photo-1518173946687-a4c8a383392e?w=800',
-      avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-      description: 'How to stream terabytes of media across disparate S3-compatible cloud storage buckets with bounded 64KB RAM buffers.',
-      likes: 3890
-    }
-  ];
-
-  const youtubeShorts: YouTubeShort[] = [
-    {
-      id: 'short-1',
-      title: '3 Color Grading Tricks for Cinematic Contrast! #Shorts',
-      views: '89.4K views',
-      poster: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?w=500',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-      likes: 6800,
-      comments: 120
-    },
-    {
-      id: 'short-2',
-      title: 'How 20GB Files Upload without RAM buffering #Tech',
-      views: '142K views',
-      poster: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=500',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-      likes: 11200,
-      comments: 240
-    },
-    {
-      id: 'short-3',
-      title: 'Anamorphic Lens Flare Breakdown in 60s #Filmmaking',
-      views: '45.1K views',
-      poster: 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=500',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-      likes: 4300,
-      comments: 85
-    }
-  ];
-
-  const storiesList: StoryItem[] = [
-    { id: 'st-0', name: 'Your Story', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100', storyImage: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1080', isMine: true },
-    { id: 'st-1', name: 'cinematic', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100', storyImage: 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=1080' },
-    { id: 'st-2', name: 'director_sarah', avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100', storyImage: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1080' },
-    { id: 'st-3', name: 'neo_tokyo', avatar: 'https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?w=100', storyImage: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1080' }
-  ];
-
-  const [postsList, setPostsList] = useState<InstagramPost[]>([
-    {
-      id: 'p-1',
-      user: 'cinematic_studios',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100',
-      location: 'Mojave Desert, California',
-      image: 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=1080',
-      caption: 'Golden hour anamorphic rig on location in the Mojave Desert. 🌅🎥 What is your go-to cinema glass?',
-      likes: 3412,
-      comments: [
-        { user: 'dop_marcus', text: 'Stunning flares! Is that the 50mm T2.1?' },
-        { user: 'lens_junkie', text: 'The Cooke anamorphic look is unbeatable.' }
-      ]
-    },
-    {
-      id: 'p-2',
-      user: 'director_sarah',
-      avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100',
-      location: 'Shibuya, Tokyo',
-      image: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=1080',
-      caption: 'Location scouting for Neon Odyssey episode 4. Synthetic rain and cybernetic reflections everywhere.',
-      likes: 1890,
-      comments: [
-        { user: 'cyber_vibe', text: 'Cannot wait for episode 4 to drop!' }
-      ]
-    }
-  ]);
-
-  const instagramReels: InstagramPost[] = [
-    {
-      id: 'reel-1',
-      user: 'cinematic_studios',
-      avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100',
-      location: 'Studio Stage A',
-      image: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?w=1080',
-      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-      caption: 'Cinematic lighting breakdown with a single 600W key and bounce board! 💡🎬',
-      likes: 14200,
-      comments: [{ user: 'film_student', text: 'So simple yet so dramatic!' }],
-      isReel: true
-    }
-  ];
-
-  // Actions
-  const toggleWatchlist = (id: string) => {
-    setWatchlist((prev) => ({
-      ...prev,
-      [id]: !prev[id]
-    }));
-  };
-
-  const handleTogglePostLike = (id: string) => {
-    setLikedPosts((prev) => {
-      const isCurrentlyLiked = !!prev[id];
-      setPostLikesCount((c) => ({
-        ...c,
-        [id]: (c[id] || 0) + (isCurrentlyLiked ? -1 : 1)
-      }));
-      return { ...prev, [id]: !isCurrentlyLiked };
-    });
-  };
-
-  const handleAddYtComment = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCommentText.trim()) return;
-    setYtComments([
-      { user: 'You (Production Admin)', text: newCommentText.trim(), time: 'Just now' },
-      ...ytComments
-    ]);
-    setNewCommentText('');
-  };
-
-  const handleAddPostComment = (postId: string) => {
-    if (!postCommentInput.trim()) return;
-    setPostsList(postsList.map(p => {
-      if (p.id === postId) {
-        return {
-          ...p,
-          comments: [...p.comments, { user: 'You', text: postCommentInput.trim() }]
-        };
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Account creation failed.');
       }
-      return p;
-    }));
-    setPostCommentInput('');
+
+      const userObj = {
+        id: data.user.id,
+        username: data.user.username,
+        displayName: data.user.displayName || data.user.username,
+        email: data.user.email,
+        avatarUrl: data.user.avatarUrl || `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.user.username}`
+      };
+
+      setCurrentUser(userObj);
+      localStorage.setItem('platform_user', JSON.stringify(userObj));
+      localStorage.setItem('platform_token', data.tokens.accessToken);
+      setShowRegisterModal(false);
+      setRegUsername('');
+      setRegDisplayName('');
+      setRegEmail('');
+      setRegPassword('');
+      setRegConfirmPassword('');
+      showToast(`Account created! Welcome, ${userObj.displayName}!`);
+    } catch (err: any) {
+      setAuthError(err.message || 'Registration failed.');
+    }
   };
 
-  const filteredMovies = moviesCatalog.filter(m => {
-    const matchesSearch = m.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          m.description.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesGenre = selectedGenre === 'all' || m.genre === selectedGenre;
-    return matchesSearch && matchesGenre;
-  });
+  // Change Password Handler
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
 
-  const watchlistMovies = moviesCatalog.filter(m => !!watchlist[m.id]);
+    if (pwdNew !== pwdConfirm) {
+      setAuthError('New passwords do not match.');
+      return;
+    }
+    if (pwdNew.length < 6) {
+      setAuthError('New password must be at least 6 characters.');
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('platform_token') || '';
+      const res = await fetch(`${API_BASE}/api/auth/change-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          userId: currentUser?.id,
+          oldPassword: pwdCurrent,
+          newPassword: pwdNew
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to change password.');
+      }
+
+      setShowPasswordChangeModal(false);
+      setPwdCurrent('');
+      setPwdNew('');
+      setPwdConfirm('');
+      showToast('Password changed successfully!');
+    } catch (err: any) {
+      setAuthError(err.message || 'Failed to update password.');
+    }
+  };
+
+  // Sign Out Handler
+  const handleSignOut = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('platform_user');
+    localStorage.removeItem('platform_token');
+    setUserMenuOpen(false);
+    showToast('Signed out successfully.');
+  };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#090a0f', color: '#fff' }}>
-      {/* Top Universal Navbar */}
-      <nav
+    <div style={{ minHeight: '100vh', background: '#0f0f0f', color: '#f1f1f1', fontFamily: 'Roboto, Arial, sans-serif' }}>
+      {/* Toast Alert */}
+      {toastMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            left: '24px',
+            zIndex: 9999,
+            background: '#22c55e',
+            color: '#fff',
+            padding: '12px 20px',
+            borderRadius: '8px',
+            fontSize: '14px',
+            fontWeight: 600,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}
+        >
+          <CheckCircle2 size={18} />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* ================= 1. YOUTUBE HEADER ================= */}
+      <header
         style={{
           position: 'sticky',
           top: 0,
-          zIndex: 50,
-          background: 'rgba(9, 10, 15, 0.95)',
-          backdropFilter: 'blur(12px)',
-          borderBottom: '1px solid #1f2937',
-          padding: '12px 32px',
+          zIndex: 100,
+          background: '#0f0f0f',
           display: 'flex',
-          justifyContent: 'space-between',
           alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: '16px'
+          justifyContent: 'space-between',
+          padding: '0 16px',
+          height: '56px',
+          borderBottom: '1px solid #272727'
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '28px' }}>
-          {/* Logo */}
+        {/* Left Section: Menu & YouTube Logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <button
+            onClick={() => setSidebarExpanded(!sidebarExpanded)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#fff',
+              cursor: 'pointer',
+              padding: '8px',
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}
+          >
+            <Menu size={22} />
+          </button>
+
           <div
-            onClick={() => setActiveTab('netflix')}
-            style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+            onClick={() => { setCurrentView('home'); setActiveVideo(null); }}
+            style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', userSelect: 'none' }}
           >
             <div
               style={{
-                width: '34px',
-                height: '34px',
-                borderRadius: '8px',
-                background: 'linear-gradient(135deg, #e50914, #f97316)',
+                width: '32px',
+                height: '22px',
+                background: '#ff0000',
+                borderRadius: '6px',
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 900,
-                color: '#fff',
-                fontSize: '18px'
+                justifyContent: 'center'
               }}
             >
-              M
+              <div
+                style={{
+                  width: 0,
+                  height: 0,
+                  borderTop: '5px solid transparent',
+                  borderBottom: '5px solid transparent',
+                  borderLeft: '10px solid #fff'
+                }}
+              />
             </div>
-            <span style={{ fontSize: '18px', fontWeight: 800, letterSpacing: '-0.5px' }}>
-              MEDIA<span style={{ color: '#e50914' }}>HUB</span>
+            <span style={{ fontSize: '19px', fontWeight: 700, letterSpacing: '-0.5px', color: '#fff' }}>
+              YouTube
+            </span>
+            <span style={{ fontSize: '10px', color: '#aaa', marginLeft: '2px', fontWeight: 500, alignSelf: 'flex-start', marginTop: '2px' }}>
+              IN
             </span>
           </div>
-
-          {/* Mode Switcher Tabs */}
-          <div
-            style={{
-              display: 'flex',
-              background: '#111827',
-              padding: '4px',
-              borderRadius: '10px',
-              border: '1px solid #1f2937'
-            }}
-          >
-            {[
-              { id: 'netflix', label: 'Netflix', icon: Film, color: '#e50914' },
-              { id: 'youtube', label: 'YouTube', icon: Youtube, color: '#ef4444' },
-              { id: 'instagram', label: 'Instagram', icon: Instagram, color: '#ec4899' },
-              { id: 'uploader', label: 'Cloudflare R2 Uploader', icon: UploadCloud, color: '#f97316' }
-            ].map((tab) => {
-              const Icon = tab.icon;
-              const isActive = activeTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id as ActiveTab)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    padding: '8px 16px',
-                    borderRadius: '8px',
-                    border: 'none',
-                    background: isActive ? tab.color : 'transparent',
-                    color: isActive ? '#fff' : '#9ca3af',
-                    fontWeight: 600,
-                    fontSize: '13px',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease'
-                  }}
-                >
-                  <Icon size={16} />
-                  <span>{tab.label}</span>
-                </button>
-              );
-            })}
-          </div>
         </div>
 
-        {/* Search & Profile Navigation */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          {/* Working Search Bar */}
+        {/* Center Section: Search Bar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: '0 1 728px', justifyContent: 'center' }}>
           <div
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '8px',
-              background: '#111827',
-              border: '1px solid #1f2937',
-              borderRadius: '8px',
-              padding: '6px 12px'
+              width: '100%',
+              maxWidth: '600px',
+              background: '#121212',
+              border: '1px solid #303030',
+              borderRadius: '40px 0 0 40px',
+              overflow: 'hidden'
             }}
           >
-            <Search size={16} color="#9ca3af" />
             <input
               type="text"
-              placeholder={`Search ${activeTab}...`}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search"
               style={{
+                width: '100%',
+                padding: '10px 16px',
                 background: 'transparent',
                 border: 'none',
-                outline: 'none',
                 color: '#fff',
-                fontSize: '13px',
-                width: '180px'
+                fontSize: '15px',
+                outline: 'none'
               }}
             />
-            {searchQuery && (
-              <X size={14} color="#9ca3af" style={{ cursor: 'pointer' }} onClick={() => setSearchQuery('')} />
-            )}
           </div>
-
-          {/* Admin Dashboard Direct Shortcut */}
-          <a
-            href="https://admin.wavemusic.dpdns.org"
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
             style={{
-              background: 'linear-gradient(135deg, #f97316, #ea580c)',
+              background: '#222222',
+              border: '1px solid #303030',
+              borderLeft: 'none',
+              borderRadius: '0 40px 40px 0',
+              padding: '10px 24px',
               color: '#fff',
-              textDecoration: 'none',
-              padding: '6px 14px',
-              borderRadius: '8px',
-              fontSize: '12px',
-              fontWeight: 700,
+              cursor: 'pointer',
+              marginLeft: '-12px',
+              display: 'flex',
+              alignItems: 'center'
+            }}
+          >
+            <Search size={18} />
+          </button>
+          <button
+            title="Search with voice"
+            style={{
+              background: '#222',
+              border: 'none',
+              borderRadius: '50%',
+              width: '40px',
+              height: '40px',
+              color: '#fff',
               display: 'flex',
               alignItems: 'center',
-              gap: '6px'
-            }}
-          >
-            <span>R2 Console</span>
-          </a>
-
-          {/* User Profile Avatar */}
-          <div
-            title="Logged in as Super Admin"
-            style={{
-              width: '36px',
-              height: '36px',
-              borderRadius: '50%',
-              background: '#1f2937',
-              border: '2px solid #374151',
-              backgroundImage: 'url(https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100)',
-              backgroundSize: 'cover',
+              justifyContent: 'center',
               cursor: 'pointer'
             }}
-          />
+          >
+            <Mic size={18} />
+          </button>
         </div>
-      </nav>
 
-      {/* Full-Screen Video Player Modal */}
-      {activeVideo && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.92)',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '24px'
-          }}
-        >
-          <div style={{ width: '100%', maxWidth: '980px' }}>
-            <VideoPlayer
-              title={activeVideo.title}
-              src={activeVideo.url}
-              poster={activeVideo.poster}
-              onClose={() => setActiveVideo(null)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Instagram Story Fullscreen Viewer Modal */}
-      {activeStory && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.95)',
-            zIndex: 110,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
-          }}
-        >
-          <div
+        {/* Right Section: Create, Notifications, Profile / Login */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button
+            onClick={() => setShowUploadModal(true)}
             style={{
-              position: 'relative',
-              width: '100%',
-              maxWidth: '420px',
-              height: '90vh',
-              maxHeight: '740px',
-              borderRadius: '16px',
-              overflow: 'hidden',
-              boxShadow: '0 25px 50px rgba(0,0,0,0.8)',
-              backgroundImage: `url(${activeStory.storyImage})`,
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
               display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-              padding: '16px'
+              alignItems: 'center',
+              gap: '6px',
+              background: '#272727',
+              border: 'none',
+              borderRadius: '20px',
+              padding: '6px 14px',
+              color: '#fff',
+              fontSize: '14px',
+              fontWeight: 500,
+              cursor: 'pointer'
             }}
           >
-            {/* Story Progress Bar */}
-            <div style={{ width: '100%', height: '3px', background: 'rgba(255,255,255,0.3)', borderRadius: '2px' }}>
-              <div style={{ width: `${storyProgress}%`, height: '100%', background: '#fff', borderRadius: '2px', transition: 'width 0.1s linear' }} />
-            </div>
+            <Plus size={18} />
+            <span>Create</span>
+          </button>
 
-            {/* Story Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundImage: `url(${activeStory.avatar})`, backgroundSize: 'cover' }} />
-                <span style={{ fontSize: '14px', fontWeight: 700 }}>{activeStory.name}</span>
-                <span style={{ fontSize: '11px', color: '#d1d5db' }}>1h ago</span>
-              </div>
-              <button
-                onClick={() => setActiveStory(null)}
-                style={{ background: 'rgba(0,0,0,0.5)', border: 'none', color: '#fff', borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer' }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Story Bottom Reply */}
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <input
-                type="text"
-                placeholder={`Reply to ${activeStory.name}...`}
-                style={{ flex: 1, padding: '10px 16px', borderRadius: '20px', background: 'rgba(0,0,0,0.6)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff', outline: 'none' }}
-              />
-              <button style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
-                <Heart size={24} />
-              </button>
-              <button style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
-                <Send size={22} />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Movie Details Modal */}
-      {selectedMovieDetail && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.85)',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '24px'
-          }}
-        >
-          <div
+          <button
+            title="Notifications"
             style={{
-              background: '#111827',
-              borderRadius: '16px',
-              maxWidth: '800px',
-              width: '100%',
-              overflow: 'hidden',
-              border: '1px solid #1f2937',
-              boxShadow: '0 25px 50px rgba(0,0,0,0.9)'
+              background: 'transparent',
+              border: 'none',
+              color: '#fff',
+              cursor: 'pointer',
+              padding: '8px',
+              position: 'relative',
+              borderRadius: '50%'
             }}
           >
-            <div
+            <Bell size={20} />
+            <span
               style={{
-                height: '320px',
-                backgroundImage: `linear-gradient(to top, #111827 0%, transparent 80%), url(${selectedMovieDetail.backdrop})`,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-                padding: '24px',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'flex-start'
+                position: 'absolute',
+                top: '4px',
+                right: '4px',
+                background: '#cc0000',
+                color: '#fff',
+                fontSize: '10px',
+                fontWeight: 700,
+                borderRadius: '50%',
+                padding: '1px 5px'
               }}
             >
-              <span style={{ background: '#e50914', color: '#fff', padding: '4px 10px', borderRadius: '4px', fontWeight: 700, fontSize: '12px' }}>
-                4K ULTRA HD • HDR
-              </span>
+              3
+            </span>
+          </button>
+
+          {currentUser ? (
+            <div style={{ position: 'relative' }}>
               <button
-                onClick={() => setSelectedMovieDetail(null)}
-                style={{ background: 'rgba(0,0,0,0.6)', border: 'none', color: '#fff', borderRadius: '50%', width: '36px', height: '36px', cursor: 'pointer', fontWeight: 700 }}
+                onClick={() => setUserMenuOpen(!userMenuOpen)}
+                style={{
+                  background: '#f97316',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '50%',
+                  width: '34px',
+                  height: '34px',
+                  fontWeight: 700,
+                  fontSize: '14px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
               >
-                ✕
+                {currentUser.displayName.charAt(0).toUpperCase()}
               </button>
-            </div>
 
-            <div style={{ padding: '0 32px 32px' }}>
-              <h2 style={{ fontSize: '32px', fontWeight: 800, margin: '0 0 12px' }}>{selectedMovieDetail.title}</h2>
-              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px', fontSize: '13px', color: '#9ca3af' }}>
-                <span style={{ color: '#46d369', fontWeight: 700 }}>98% Match</span>
-                <span>{selectedMovieDetail.year}</span>
-                <span style={{ border: '1px solid #4b5563', padding: '1px 6px', borderRadius: '3px' }}>{selectedMovieDetail.rating}</span>
-                <span>{selectedMovieDetail.duration}</span>
-                <span style={{ border: '1px solid #e50914', color: '#e50914', padding: '1px 6px', borderRadius: '3px', fontWeight: 700 }}>Dolby 5.1</span>
-              </div>
-
-              <p style={{ fontSize: '15px', color: '#d1d5db', lineHeight: 1.6, marginBottom: '24px' }}>
-                {selectedMovieDetail.description}
-              </p>
-
-              <div style={{ display: 'flex', gap: '16px', alignItems: 'center', marginBottom: '24px' }}>
-                <button
-                  onClick={() => {
-                    const mov = selectedMovieDetail;
-                    setSelectedMovieDetail(null);
-                    setActiveVideo({ title: mov.title, url: mov.videoUrl, poster: mov.backdrop });
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    background: '#fff',
-                    color: '#000',
-                    border: 'none',
-                    borderRadius: '8px',
-                    padding: '12px 28px',
-                    fontSize: '15px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  <Play size={18} fill="#000" />
-                  <span>Play</span>
-                </button>
-
-                <button
-                  onClick={() => toggleWatchlist(selectedMovieDetail.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    background: watchlist[selectedMovieDetail.id] ? '#1f2937' : 'rgba(255,255,255,0.15)',
-                    color: watchlist[selectedMovieDetail.id] ? '#46d369' : '#fff',
-                    border: 'none',
-                    borderRadius: '8px',
-                    padding: '12px 24px',
-                    fontSize: '15px',
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  {watchlist[selectedMovieDetail.id] ? <Check size={18} /> : <Plus size={18} />}
-                  <span>{watchlist[selectedMovieDetail.id] ? 'In Watchlist' : 'Add to Watchlist'}</span>
-                </button>
-              </div>
-
-              <div style={{ borderTop: '1px solid #1f2937', paddingTop: '16px', fontSize: '13px', color: '#9ca3af' }}>
-                <span style={{ color: '#6b7280' }}>Starring: </span>
-                <span>{selectedMovieDetail.cast.join(', ')}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Main Content Viewport */}
-      <main style={{ flex: 1, padding: '24px 32px' }}>
-        {/* ================= NETFLIX EXPERIENCE ================= */}
-        {activeTab === 'netflix' && (
-          <div>
-            {/* Hero Billboard */}
-            <div
-              style={{
-                position: 'relative',
-                borderRadius: '16px',
-                overflow: 'hidden',
-                minHeight: '440px',
-                backgroundImage:
-                  'linear-gradient(to right, rgba(9,10,15,0.95) 30%, transparent 80%), url(https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1600)',
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-                padding: '48px',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'center',
-                marginBottom: '32px'
-              }}
-            >
-              <div style={{ maxWidth: '580px' }}>
-                <span
-                  style={{
-                    background: '#e50914',
-                    color: '#fff',
-                    fontWeight: 700,
-                    fontSize: '11px',
-                    padding: '3px 8px',
-                    borderRadius: '4px'
-                  }}
-                >
-                  FEATURED SCI-FI EPIC
-                </span>
-                <h1 style={{ fontSize: '42px', fontWeight: 800, margin: '12px 0 16px', color: '#fff', lineHeight: 1.1 }}>
-                  Stellar Horizon: 2099
-                </h1>
-                <p style={{ fontSize: '15px', color: '#d1d5db', lineHeight: 1.5, marginBottom: '24px' }}>
-                  An expedition beyond the solar boundary encounters an ancient spatial anomaly that alters time and
-                  memory. Streamed with multi-bitrate adaptive ABR and multi-channel audio.
-                </p>
-                <div style={{ display: 'flex', gap: '16px' }}>
-                  <button
-                    onClick={() =>
-                      setActiveVideo({
-                        title: 'Stellar Horizon: 2099',
-                        url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-                        poster: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1280'
-                      })
-                    }
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      background: '#fff',
-                      color: '#000',
-                      border: 'none',
-                      borderRadius: '8px',
-                      padding: '12px 24px',
-                      fontSize: '15px',
-                      fontWeight: 700,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <Play size={18} fill="#000" />
-                    <span>Watch Now</span>
-                  </button>
-                  <button
-                    onClick={() => toggleWatchlist('mov-stellar')}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      background: watchlist['mov-stellar'] ? '#1f2937' : 'rgba(255,255,255,0.2)',
-                      color: watchlist['mov-stellar'] ? '#46d369' : '#fff',
-                      border: 'none',
-                      borderRadius: '8px',
-                      padding: '12px 24px',
-                      fontSize: '15px',
-                      fontWeight: 600,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {watchlist['mov-stellar'] ? <Check size={18} /> : <Plus size={18} />}
-                    <span>{watchlist['mov-stellar'] ? 'In Watchlist' : '+ Add to Watchlist'}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Category Filter Pills */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '28px', overflowX: 'auto', paddingBottom: '4px' }}>
-              {[
-                { id: 'all', label: 'All Titles' },
-                { id: 'sci-fi', label: 'Sci-Fi' },
-                { id: 'cyberpunk', label: 'Cyberpunk' },
-                { id: 'action', label: 'Action' },
-                { id: 'drama', label: 'Drama' }
-              ].map((g) => (
-                <button
-                  key={g.id}
-                  onClick={() => setSelectedGenre(g.id)}
-                  style={{
-                    padding: '8px 18px',
-                    borderRadius: '20px',
-                    border: 'none',
-                    background: selectedGenre === g.id ? '#e50914' : '#111827',
-                    color: selectedGenre === g.id ? '#fff' : '#9ca3af',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  {g.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Watchlist Section (if items saved) */}
-            {watchlistMovies.length > 0 && (
-              <div style={{ marginBottom: '36px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                  <Bookmark size={18} color="#e50914" />
-                  <h2 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>My Watchlist</h2>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px' }}>
-                  {watchlistMovies.map((item) => (
-                    <div
-                      key={item.id}
-                      onClick={() => setSelectedMovieDetail(item)}
-                      style={{
-                        background: '#111827',
-                        borderRadius: '10px',
-                        overflow: 'hidden',
-                        border: '1px solid #1f2937',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      <div
-                        style={{
-                          height: '280px',
-                          backgroundImage: `url(${item.poster})`,
-                          backgroundSize: 'cover',
-                          backgroundPosition: 'center'
-                        }}
-                      />
-                      <div style={{ padding: '12px' }}>
-                        <div style={{ fontSize: '14px', fontWeight: 600 }}>{item.title}</div>
-                        <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>{item.year} • {item.rating}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Continue Watching Section */}
-            <div style={{ marginBottom: '36px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                <Clock size={18} color="#e50914" />
-                <h2 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>Continue Watching</h2>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
+              {userMenuOpen && (
                 <div
                   style={{
-                    background: '#111827',
+                    position: 'absolute',
+                    top: '44px',
+                    right: 0,
+                    width: '260px',
+                    background: '#282828',
                     borderRadius: '12px',
-                    overflow: 'hidden',
-                    border: '1px solid #1f2937',
-                    cursor: 'pointer'
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                    border: '1px solid #3f3f3f',
+                    zIndex: 200,
+                    overflow: 'hidden'
                   }}
-                  onClick={() =>
-                    setActiveVideo({
-                      title: 'Neon Odyssey: S1 E1 Signal in the Void',
-                      url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-                      poster: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=800'
-                    })
-                  }
                 >
-                  <div
-                    style={{
-                      height: '160px',
-                      backgroundImage: 'url(https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=800)',
-                      backgroundSize: 'cover',
-                      position: 'relative'
-                    }}
-                  >
-                    <div
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        background: 'rgba(0,0,0,0.3)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center'
-                      }}
-                    >
-                      <Play size={32} color="#fff" />
-                    </div>
+                  <div style={{ padding: '16px', borderBottom: '1px solid #3f3f3f' }}>
+                    <div style={{ fontWeight: 600, fontSize: '15px', color: '#fff' }}>{currentUser.displayName}</div>
+                    <div style={{ fontSize: '12px', color: '#aaa', marginTop: '2px' }}>@{currentUser.username}</div>
+                    <div style={{ fontSize: '12px', color: '#888', marginTop: '2px' }}>{currentUser.email}</div>
                   </div>
-                  <div style={{ height: '4px', background: '#374151' }}>
-                    <div style={{ width: '65%', height: '100%', background: '#e50914' }} />
-                  </div>
-                  <div style={{ padding: '12px' }}>
-                    <div style={{ fontSize: '14px', fontWeight: 600 }}>Neon Odyssey: S1 E1</div>
-                    <div style={{ fontSize: '12px', color: '#9ca3af' }}>35m left of 54m</div>
-                  </div>
-                </div>
-              </div>
-            </div>
 
-            {/* Filtered Movies Grid */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                <TrendingUp size={18} color="#e50914" />
-                <h2 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>Movies & Web Series</h2>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px' }}>
-                {filteredMovies.map((item) => (
-                  <div
-                    key={item.id}
-                    onClick={() => setSelectedMovieDetail(item)}
+                  <button
+                    onClick={() => { setShowPasswordChangeModal(true); setUserMenuOpen(false); }}
                     style={{
-                      background: '#111827',
-                      borderRadius: '10px',
-                      overflow: 'hidden',
-                      border: '1px solid #1f2937',
-                      cursor: 'pointer',
-                      transition: 'transform 0.2s ease'
+                      width: '100%',
+                      padding: '12px 16px',
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#fff',
+                      fontSize: '14px',
+                      textAlign: 'left',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      cursor: 'pointer'
                     }}
                   >
-                    <div
-                      style={{
-                        height: '280px',
-                        backgroundImage: `url(${item.poster})`,
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center'
-                      }}
-                    />
-                    <div style={{ padding: '12px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#fff' }}>{item.title}</div>
-                      <div style={{ display: 'flex', gap: '8px', fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>
-                        <span>{item.year}</span>
-                        <span>•</span>
-                        <span style={{ border: '1px solid #374151', padding: '1px 4px', borderRadius: '3px' }}>
-                          {item.rating}
-                        </span>
-                        <span>•</span>
-                        <span style={{ color: '#60a5fa' }}>4K HDR</span>
-                      </div>
-                    </div>
+                    <Key size={16} />
+                    <span>Change Password</span>
+                  </button>
+
+                  <button
+                    onClick={handleSignOut}
+                    style={{
+                      width: '100%',
+                      padding: '12px 16px',
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#ef4444',
+                      fontSize: '14px',
+                      textAlign: 'left',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      cursor: 'pointer',
+                      borderTop: '1px solid #383838'
+                    }}
+                  >
+                    <LogOut size={16} />
+                    <span>Sign Out</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                onClick={() => { setShowSignInModal(true); setAuthError(''); }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'transparent',
+                  border: '1px solid #3ea6ff',
+                  borderRadius: '18px',
+                  padding: '6px 14px',
+                  color: '#3ea6ff',
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                <User size={16} />
+                <span>Sign in</span>
+              </button>
+              <button
+                onClick={() => { setShowRegisterModal(true); setAuthError(''); }}
+                style={{
+                  background: '#3ea6ff',
+                  border: 'none',
+                  borderRadius: '18px',
+                  padding: '6px 14px',
+                  color: '#000',
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Create Account
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      {/* ================= 2. MAIN BODY (SIDEBAR + CONTENT) ================= */}
+      <div style={{ display: 'flex' }}>
+        {/* Left Sidebar */}
+        <aside
+          style={{
+            width: sidebarExpanded ? '240px' : '72px',
+            background: '#0f0f0f',
+            height: 'calc(100vh - 56px)',
+            position: 'sticky',
+            top: '56px',
+            overflowY: 'auto',
+            padding: sidebarExpanded ? '12px' : '8px 4px',
+            flexShrink: 0,
+            borderRight: '1px solid #1f1f1f',
+            transition: 'width 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
+          }}
+        >
+          {/* Main Links */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
+            <button
+              onClick={() => { setCurrentView('home'); setActiveVideo(null); }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                flexDirection: sidebarExpanded ? 'row' : 'column',
+                gap: sidebarExpanded ? '16px' : '4px',
+                padding: sidebarExpanded ? '10px 14px' : '10px 0',
+                background: currentView === 'home' ? '#272727' : 'transparent',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '10px',
+                cursor: 'pointer',
+                textAlign: sidebarExpanded ? 'left' : 'center',
+                width: '100%',
+                fontSize: sidebarExpanded ? '14px' : '10px',
+                fontWeight: currentView === 'home' ? 600 : 400
+              }}
+            >
+              <HomeIcon size={20} />
+              <span>Home</span>
+            </button>
+
+            <button
+              onClick={() => { setCurrentView('shorts'); setActiveVideo(null); }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                flexDirection: sidebarExpanded ? 'row' : 'column',
+                gap: sidebarExpanded ? '16px' : '4px',
+                padding: sidebarExpanded ? '10px 14px' : '10px 0',
+                background: currentView === 'shorts' ? '#272727' : 'transparent',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '10px',
+                cursor: 'pointer',
+                textAlign: sidebarExpanded ? 'left' : 'center',
+                width: '100%',
+                fontSize: sidebarExpanded ? '14px' : '10px',
+                fontWeight: currentView === 'shorts' ? 600 : 400
+              }}
+            >
+              <Flame size={20} color="#ef4444" />
+              <span>Shorts</span>
+            </button>
+
+            <button
+              onClick={() => showToast('Subscriptions feed updated.')}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                flexDirection: sidebarExpanded ? 'row' : 'column',
+                gap: sidebarExpanded ? '16px' : '4px',
+                padding: sidebarExpanded ? '10px 14px' : '10px 0',
+                background: 'transparent',
+                color: '#fff',
+                border: 'none',
+                borderRadius: '10px',
+                cursor: 'pointer',
+                textAlign: sidebarExpanded ? 'left' : 'center',
+                width: '100%',
+                fontSize: sidebarExpanded ? '14px' : '10px'
+              }}
+            >
+              <Tv size={20} />
+              <span>Subscriptions</span>
+            </button>
+          </div>
+
+          {sidebarExpanded && (
+            <>
+              <div style={{ height: '1px', background: '#272727', margin: '8px 0 12px 0' }} />
+
+              {/* You Section */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
+                <div style={{ padding: '6px 14px', fontSize: '14px', fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>You</span>
+                  <ChevronRight size={14} />
+                </div>
+                <button
+                  onClick={() => { setCurrentView('watchLater'); setActiveVideo(null); }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '16px',
+                    padding: '10px 14px',
+                    background: currentView === 'watchLater' ? '#272727' : 'transparent',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '10px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    width: '100%'
+                  }}
+                >
+                  <Clock size={18} />
+                  <span>Watch Later ({watchLaterList.length})</span>
+                </button>
+                <button
+                  onClick={() => { setCurrentView('liked'); setActiveVideo(null); }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '16px',
+                    padding: '10px 14px',
+                    background: currentView === 'liked' ? '#272727' : 'transparent',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '10px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    width: '100%'
+                  }}
+                >
+                  <ThumbsUp size={18} />
+                  <span>Liked Videos ({likedList.length})</span>
+                </button>
+              </div>
+
+              <div style={{ height: '1px', background: '#272727', margin: '8px 0 12px 0' }} />
+
+              {/* Subscriptions List */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '16px' }}>
+                <div style={{ padding: '6px 14px', fontSize: '14px', fontWeight: 700, color: '#fff' }}>Subscriptions</div>
+                {[
+                  { name: 'Cloud Architecture & Systems', avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100' },
+                  { name: 'Systems Engineering Academy', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100' },
+                  { name: 'WaveMusic Originals', avatar: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=100' },
+                  { name: 'Modern Code Lab', avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=100' }
+                ].map((ch) => (
+                  <div
+                    key={ch.name}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '12px',
+                      padding: '8px 14px',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      fontSize: '13px'
+                    }}
+                  >
+                    <img src={ch.avatar} alt={ch.name} style={{ width: '24px', height: '24px', borderRadius: '50%' }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ch.name}</span>
                   </div>
                 ))}
               </div>
-            </div>
-          </div>
-        )}
 
-        {/* ================= YOUTUBE EXPERIENCE ================= */}
-        {activeTab === 'youtube' && (
-          <div>
-            {/* Category Chips */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '24px', overflowX: 'auto', paddingBottom: '4px' }}>
-              {['All', 'Distributed Systems', 'Cloudflare R2', 'Camera Gear', 'Color Grading', 'Shorts', 'Podcasts'].map(
-                (cat, idx) => (
+              <div style={{ height: '1px', background: '#272727', margin: '8px 0 12px 0' }} />
+
+              {/* Explore Section */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ padding: '6px 14px', fontSize: '14px', fontWeight: 700, color: '#fff' }}>Explore</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 14px', fontSize: '13px', cursor: 'pointer' }}>
+                  <Music size={18} />
+                  <span>Music</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 14px', fontSize: '13px', cursor: 'pointer' }}>
+                  <Gamepad2 size={18} />
+                  <span>Gaming</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '8px 14px', fontSize: '13px', cursor: 'pointer' }}>
+                  <Newspaper size={18} />
+                  <span>News</span>
+                </div>
+              </div>
+            </>
+          )}
+        </aside>
+
+        {/* Content View Container */}
+        <main style={{ flex: 1, padding: currentView === 'watch' ? '20px 24px' : '0 24px 32px 24px', overflowX: 'hidden' }}>
+          {/* ================= VIEW: HOME (VIDEO FEED) ================= */}
+          {currentView === 'home' && (
+            <div>
+              {/* Category Chips Bar */}
+              <div
+                style={{
+                  position: 'sticky',
+                  top: '56px',
+                  zIndex: 90,
+                  background: '#0f0f0f',
+                  padding: '12px 0',
+                  display: 'flex',
+                  gap: '10px',
+                  overflowX: 'auto',
+                  borderBottom: '1px solid #1f1f1f'
+                }}
+              >
+                {categories.map((cat) => (
                   <button
                     key={cat}
+                    onClick={() => setSelectedCategory(cat)}
                     style={{
                       padding: '6px 14px',
                       borderRadius: '8px',
                       border: 'none',
-                      background: idx === 0 ? '#fff' : '#1f2937',
-                      color: idx === 0 ? '#000' : '#fff',
+                      background: selectedCategory === cat ? '#f1f1f1' : '#272727',
+                      color: selectedCategory === cat ? '#0f0f0f' : '#f1f1f1',
                       fontSize: '13px',
                       fontWeight: 600,
                       cursor: 'pointer',
@@ -1029,547 +1199,1330 @@ export default function Home() {
                   >
                     {cat}
                   </button>
-                )
-              )}
-            </div>
-
-            {/* YouTube Shorts Shelf */}
-            <div style={{ marginBottom: '32px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                <span style={{ background: '#ef4444', color: '#fff', fontSize: '10px', fontWeight: 800, padding: '2px 6px', borderRadius: '4px' }}>
-                  SHORTS
-                </span>
-                <h2 style={{ fontSize: '18px', fontWeight: 700, margin: 0 }}>Vertical Shorts Feed</h2>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '16px' }}>
-                {youtubeShorts.map((s) => (
-                  <div
-                    key={s.id}
-                    onClick={() =>
-                      setActiveVideo({
-                        title: s.title,
-                        url: s.videoUrl,
-                        poster: s.poster
-                      })
-                    }
-                    style={{
-                      height: '320px',
-                      borderRadius: '12px',
-                      backgroundImage: `url(${s.poster})`,
-                      backgroundSize: 'cover',
-                      backgroundPosition: 'center',
-                      position: 'relative',
-                      overflow: 'hidden',
-                      cursor: 'pointer',
-                      border: '1px solid #1f2937'
-                    }}
-                  >
-                    <div
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        background: 'linear-gradient(to top, rgba(0,0,0,0.9) 10%, transparent 60%)',
-                        padding: '12px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'flex-end'
-                      }}
-                    >
-                      <div style={{ fontSize: '13px', fontWeight: 600, color: '#fff' }}>{s.title}</div>
-                      <div style={{ fontSize: '11px', color: '#9ca3af', marginTop: '4px' }}>{s.views}</div>
-                    </div>
-                  </div>
                 ))}
               </div>
-            </div>
 
-            {/* Standard YouTube Video Grid */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '24px', marginBottom: '40px' }}>
-              {youtubeVideos.map((v) => (
-                <div
-                  key={v.id}
-                  style={{ cursor: 'pointer' }}
-                  onClick={() =>
-                    setActiveVideo({
-                      title: v.title,
-                      url: v.videoUrl,
-                      poster: v.thumb
-                    })
-                  }
-                >
-                  <div
-                    style={{
-                      height: '200px',
-                      borderRadius: '12px',
-                      backgroundImage: `url(${v.thumb})`,
-                      backgroundSize: 'cover',
-                      backgroundPosition: 'center',
-                      position: 'relative',
-                      overflow: 'hidden',
-                      marginBottom: '12px'
-                    }}
-                  >
-                    <span
-                      style={{
-                        position: 'absolute',
-                        bottom: '8px',
-                        right: '8px',
-                        background: 'rgba(0,0,0,0.85)',
-                        color: '#fff',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        padding: '2px 6px',
-                        borderRadius: '4px'
-                      }}
-                    >
-                      {v.duration}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '12px' }}>
-                    <div
-                      style={{
-                        width: '38px',
-                        height: '38px',
-                        borderRadius: '50%',
-                        backgroundImage: `url(${v.avatar})`,
-                        backgroundSize: 'cover',
-                        flexShrink: 0
-                      }}
-                    />
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#fff', lineHeight: 1.3 }}>{v.title}</div>
-                      <div style={{ fontSize: '12px', color: '#9ca3af', marginTop: '4px' }}>{v.channel}</div>
-                      <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '2px' }}>
-                        {v.views} • {v.time}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Creator Channel Showcase & Real-Time Interactive Comments */}
-            <div
-              style={{
-                background: '#111827',
-                borderRadius: '16px',
-                border: '1px solid #1f2937',
-                padding: '24px'
-              }}
-            >
-              {/* Channel Header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                  <div style={{ width: '56px', height: '56px', borderRadius: '50%', backgroundImage: 'url(https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150)', backgroundSize: 'cover' }} />
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700 }}>Cinematic Studios Official</h3>
-                    <div style={{ fontSize: '13px', color: '#9ca3af' }}>{isSubscribed ? '145,001 subscribers' : '145,000 subscribers'}</div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                  <button
-                    onClick={() => {
-                      setYtLikes((prev) => {
-                        const cur = prev['yt-1'] || { liked: false, count: 1240 };
-                        return {
-                          ...prev,
-                          'yt-1': { liked: !cur.liked, count: cur.count + (cur.liked ? -1 : 1) }
-                        };
-                      });
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      background: ytLikes['yt-1']?.liked ? '#ef4444' : '#1f2937',
-                      color: '#fff',
-                      border: 'none',
-                      padding: '8px 16px',
-                      borderRadius: '20px',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <ThumbsUp size={16} />
-                    <span>{ytLikes['yt-1']?.count.toLocaleString()}</span>
-                  </button>
-
-                  <button
-                    onClick={() => setIsSubscribed(!isSubscribed)}
-                    style={{
-                      background: isSubscribed ? '#374151' : '#fff',
-                      color: isSubscribed ? '#9ca3af' : '#000',
-                      border: 'none',
-                      padding: '10px 24px',
-                      borderRadius: '20px',
-                      fontSize: '14px',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px'
-                    }}
-                  >
-                    {isSubscribed ? <UserCheck size={16} /> : null}
-                    <span>{isSubscribed ? 'Subscribed' : 'Subscribe'}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Real-time Comments Section */}
-              <div style={{ borderTop: '1px solid #1f2937', paddingTop: '20px' }}>
-                <h4 style={{ fontSize: '15px', fontWeight: 700, margin: '0 0 16px' }}>{ytComments.length} Comments</h4>
-
-                {/* Comment Input */}
-                <form onSubmit={handleAddYtComment} style={{ display: 'flex', gap: '12px', marginBottom: '24px' }}>
-                  <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundImage: 'url(https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100)', backgroundSize: 'cover', flexShrink: 0 }} />
-                  <input
-                    type="text"
-                    placeholder="Add a comment..."
-                    value={newCommentText}
-                    onChange={(e) => setNewCommentText(e.target.value)}
-                    style={{
-                      flex: 1,
-                      background: '#1f2937',
-                      border: '1px solid #374151',
-                      borderRadius: '8px',
-                      padding: '8px 16px',
-                      color: '#fff',
-                      fontSize: '13px',
-                      outline: 'none'
-                    }}
-                  />
-                  <button
-                    type="submit"
-                    style={{
-                      background: '#ef4444',
-                      color: '#fff',
-                      border: 'none',
-                      borderRadius: '8px',
-                      padding: '8px 20px',
-                      fontSize: '13px',
-                      fontWeight: 600,
-                      cursor: 'pointer'
-                    }}
-                  >
-                    Comment
-                  </button>
-                </form>
-
-                {/* Comments List */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  {ytComments.map((c, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '12px' }}>
-                      <div style={{ width: '32px', height: '32px', borderRadius: '50%', background: '#374151', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, flexShrink: 0 }}>
-                        {c.user[0]}
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '12px', fontWeight: 700, color: '#fff' }}>
-                          {c.user} <span style={{ fontSize: '11px', color: '#6b7280', fontWeight: 400, marginLeft: '6px' }}>{c.time}</span>
-                        </div>
-                        <div style={{ fontSize: '13px', color: '#d1d5db', marginTop: '4px', lineHeight: 1.4 }}>
-                          {c.text}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ================= INSTAGRAM EXPERIENCE ================= */}
-        {activeTab === 'instagram' && (
-          <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-            {/* Feed vs Reels Switcher */}
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '16px', marginBottom: '20px' }}>
-              <button
-                onClick={() => setIgSubTab('feed')}
-                style={{
-                  background: igSubTab === 'feed' ? '#ec4899' : '#111827',
-                  color: '#fff',
-                  border: 'none',
-                  padding: '8px 24px',
-                  borderRadius: '20px',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  cursor: 'pointer'
-                }}
-              >
-                Feed
-              </button>
-              <button
-                onClick={() => setIgSubTab('reels')}
-                style={{
-                  background: igSubTab === 'reels' ? '#ec4899' : '#111827',
-                  color: '#fff',
-                  border: 'none',
-                  padding: '8px 24px',
-                  borderRadius: '20px',
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  cursor: 'pointer'
-                }}
-              >
-                Reels (Vertical)
-              </button>
-            </div>
-
-            {/* Active Stories Carousel */}
-            {igSubTab === 'feed' && (
+              {/* Video Cards Grid */}
               <div
                 style={{
-                  display: 'flex',
-                  gap: '16px',
-                  padding: '16px',
-                  background: '#111827',
-                  borderRadius: '16px',
-                  border: '1px solid #1f2937',
-                  marginBottom: '24px',
-                  overflowX: 'auto'
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+                  gap: '20px 16px',
+                  marginTop: '20px'
                 }}
               >
-                {storiesList.map((s) => (
+                {filteredVideos.map((video) => (
                   <div
-                    key={s.id}
-                    onClick={() => setActiveStory(s)}
-                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px', cursor: 'pointer' }}
+                    key={video.id}
+                    onClick={() => handleWatchVideo(video)}
+                    style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column' }}
                   >
+                    {/* Thumbnail Container */}
                     <div
                       style={{
-                        width: '64px',
-                        height: '64px',
-                        borderRadius: '50%',
-                        padding: '3px',
-                        background: s.isMine ? '#374151' : 'linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888)'
+                        position: 'relative',
+                        width: '100%',
+                        paddingTop: '56.25%',
+                        borderRadius: '12px',
+                        overflow: 'hidden',
+                        background: '#222'
                       }}
                     >
-                      <div
+                      <img
+                        src={video.thumbnail}
+                        alt={video.title}
                         style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
                           width: '100%',
                           height: '100%',
-                          borderRadius: '50%',
-                          backgroundImage: `url(${s.avatar})`,
-                          backgroundSize: 'cover',
-                          border: '2px solid #111827'
+                          objectFit: 'cover'
                         }}
                       />
+                      <span
+                        style={{
+                          position: 'absolute',
+                          bottom: '8px',
+                          right: '8px',
+                          background: 'rgba(0,0,0,0.8)',
+                          color: '#fff',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          padding: '2px 6px',
+                          borderRadius: '4px'
+                        }}
+                      >
+                        {video.duration}
+                      </span>
                     </div>
-                    <span style={{ fontSize: '11px', color: '#9ca3af', maxWidth: '64px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {s.name}
-                    </span>
+
+                    {/* Metadata Row */}
+                    <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                      <img
+                        src={video.channelAvatar}
+                        alt={video.channel}
+                        style={{ width: '36px', height: '36px', borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+                      />
+                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <h3
+                          style={{
+                            margin: 0,
+                            fontSize: '14px',
+                            fontWeight: 600,
+                            color: '#fff',
+                            lineHeight: 1.4,
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden'
+                          }}
+                        >
+                          {video.title}
+                        </h3>
+                        <div style={{ fontSize: '12px', color: '#aaaaaa', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <span>{video.channel}</span>
+                          {video.verified && <Check size={12} color="#aaaaaa" />}
+                        </div>
+                        <div style={{ fontSize: '12px', color: '#aaaaaa', marginTop: '2px' }}>
+                          {video.views} • {video.time}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
-            )}
+            </div>
+          )}
 
-            {/* Instagram Posts Feed */}
-            {igSubTab === 'feed' && (
+          {/* ================= VIEW: WATCH (CINEMA MODE PLAYER & COMMENTS) ================= */}
+          {currentView === 'watch' && activeVideo && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: isCinemaMode ? '1fr' : 'minmax(0, 1fr) 400px',
+                gap: '24px',
+                maxWidth: '1700px',
+                margin: '0 auto'
+              }}
+            >
+              {/* Primary Video Column */}
               <div>
-                {postsList.map((post) => {
-                  const isLiked = !!likedPosts[post.id];
-                  const likes = postLikesCount[post.id] || post.likes;
-                  const isCommentsOpen = openPostComments === post.id;
-                  return (
-                    <div
-                      key={post.id}
-                      style={{
-                        background: '#111827',
-                        border: '1px solid #1f2937',
-                        borderRadius: '16px',
-                        overflow: 'hidden',
-                        marginBottom: '24px'
-                      }}
-                    >
-                      {/* Post Header */}
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <div
-                            style={{
-                              width: '36px',
-                              height: '36px',
-                              borderRadius: '50%',
-                              backgroundImage: `url(${post.avatar})`,
-                              backgroundSize: 'cover'
-                            }}
-                          />
-                          <div>
-                            <div style={{ fontSize: '13px', fontWeight: 700, color: '#fff' }}>{post.user}</div>
-                            <div style={{ fontSize: '11px', color: '#9ca3af' }}>{post.location}</div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Post Image */}
-                      <div
-                        onDoubleClick={() => handleTogglePostLike(post.id)}
-                        style={{
-                          height: '420px',
-                          backgroundImage: `url(${post.image})`,
-                          backgroundSize: 'cover',
-                          backgroundPosition: 'center',
-                          cursor: 'pointer'
-                        }}
-                      />
-
-                      {/* Post Actions */}
-                      <div style={{ padding: '12px 16px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                          <div style={{ display: 'flex', gap: '16px' }}>
-                            <button
-                              onClick={() => handleTogglePostLike(post.id)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                            >
-                              <Heart size={22} color={isLiked ? '#ef4444' : '#fff'} fill={isLiked ? '#ef4444' : 'none'} />
-                            </button>
-                            <button
-                              onClick={() => setOpenPostComments(isCommentsOpen ? null : post.id)}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                            >
-                              <MessageCircle size={22} color="#fff" />
-                            </button>
-                            <button style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                              <Share2 size={22} color="#fff" />
-                            </button>
-                          </div>
-                          <Bookmark size={22} color="#fff" style={{ cursor: 'pointer' }} />
-                        </div>
-
-                        <div style={{ fontSize: '13px', fontWeight: 700, color: '#fff', marginBottom: '6px' }}>
-                          {likes.toLocaleString()} likes
-                        </div>
-
-                        <div style={{ fontSize: '13px', color: '#e5e7eb', lineHeight: 1.4 }}>
-                          <span style={{ fontWeight: 700, marginRight: '6px' }}>{post.user}</span>
-                          {post.caption}
-                        </div>
-
-                        {/* Comments Drawer */}
-                        <div
-                          onClick={() => setOpenPostComments(isCommentsOpen ? null : post.id)}
-                          style={{ fontSize: '12px', color: '#6b7280', marginTop: '6px', cursor: 'pointer' }}
-                        >
-                          {isCommentsOpen ? 'Hide comments' : `View all ${post.comments.length} comments`}
-                        </div>
-
-                        {isCommentsOpen && (
-                          <div style={{ marginTop: '12px', borderTop: '1px solid #1f2937', paddingTop: '8px' }}>
-                            {post.comments.map((c, idx) => (
-                              <div key={idx} style={{ fontSize: '12px', marginBottom: '6px' }}>
-                                <span style={{ fontWeight: 700, color: '#fff', marginRight: '6px' }}>{c.user}</span>
-                                <span style={{ color: '#d1d5db' }}>{c.text}</span>
-                              </div>
-                            ))}
-
-                            <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                              <input
-                                type="text"
-                                placeholder="Add a comment..."
-                                value={postCommentInput}
-                                onChange={(e) => setPostCommentInput(e.target.value)}
-                                style={{
-                                  flex: 1,
-                                  background: '#1f2937',
-                                  border: '1px solid #374151',
-                                  borderRadius: '6px',
-                                  padding: '6px 10px',
-                                  color: '#fff',
-                                  fontSize: '12px',
-                                  outline: 'none'
-                                }}
-                              />
-                              <button
-                                onClick={() => handleAddPostComment(post.id)}
-                                style={{
-                                  background: '#ec4899',
-                                  color: '#fff',
-                                  border: 'none',
-                                  borderRadius: '6px',
-                                  padding: '6px 12px',
-                                  fontSize: '12px',
-                                  fontWeight: 600,
-                                  cursor: 'pointer'
-                                }}
-                              >
-                                Post
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Instagram Reels Section */}
-            {igSubTab === 'reels' && (
-              <div>
-                {instagramReels.map((reel) => (
-                  <div
-                    key={reel.id}
+                {/* Cinema Player Container */}
+                <div
+                  style={{
+                    position: 'relative',
+                    width: '100%',
+                    paddingTop: '56.25%',
+                    background: '#000',
+                    borderRadius: '14px',
+                    overflow: 'hidden',
+                    boxShadow: '0 10px 30px rgba(0,0,0,0.8)'
+                  }}
+                >
+                  <video
+                    ref={videoRef}
+                    src={activeVideo.videoUrl}
+                    poster={activeVideo.thumbnail}
+                    onTimeUpdate={handleTimeUpdate}
+                    onEnded={() => setIsPlaying(false)}
+                    autoPlay
+                    playsInline
                     style={{
-                      position: 'relative',
-                      height: '620px',
-                      borderRadius: '16px',
-                      overflow: 'hidden',
-                      marginBottom: '24px',
-                      border: '1px solid #1f2937',
-                      background: '#000'
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'contain'
+                    }}
+                    onClick={togglePlay}
+                  />
+
+                  {/* Player Controls Overlay */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      padding: '12px 16px',
+                      background: 'linear-gradient(transparent, rgba(0,0,0,0.85))',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px'
                     }}
                   >
-                    <video
-                      src={reel.videoUrl}
-                      autoPlay
-                      loop
-                      muted
-                      playsInline
-                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    />
-                    <div
+                    {/* Scrubber / Progress Bar */}
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={videoProgress}
+                      onChange={handleSeek}
                       style={{
-                        position: 'absolute',
-                        inset: 0,
-                        background: 'linear-gradient(to top, rgba(0,0,0,0.8) 10%, transparent 60%)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        justifyContent: 'flex-end',
-                        padding: '20px'
+                        width: '100%',
+                        cursor: 'pointer',
+                        accentColor: '#ff0000',
+                        height: '4px'
                       }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
-                        <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundImage: `url(${reel.avatar})`, backgroundSize: 'cover' }} />
-                        <span style={{ fontWeight: 700, fontSize: '14px' }}>{reel.user}</span>
-                      </div>
-                      <p style={{ fontSize: '13px', color: '#e5e7eb', margin: '0 0 12px' }}>{reel.caption}</p>
-                      <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                    />
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                         <button
-                          onClick={() => handleTogglePostLike(reel.id)}
-                          style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}
+                          onClick={togglePlay}
+                          style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer' }}
                         >
-                          <Heart size={20} color={likedPosts[reel.id] ? '#ef4444' : '#fff'} fill={likedPosts[reel.id] ? '#ef4444' : 'none'} />
-                          <span style={{ fontSize: '12px' }}>{(postLikesCount[reel.id] || reel.likes).toLocaleString()}</span>
+                          {isPlaying ? <Pause size={22} /> : <Play size={22} />}
                         </button>
-                        <button style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
-                          <MessageCircle size={20} color="#fff" />
-                          <span style={{ fontSize: '12px' }}>{reel.comments.length}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <button
+                            onClick={() => {
+                              if (videoRef.current) {
+                                videoRef.current.muted = !isMuted;
+                                setIsMuted(!isMuted);
+                              }
+                            }}
+                            style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer' }}
+                          >
+                            {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+                          </button>
+                          <span style={{ fontSize: '13px', color: '#ddd' }}>
+                            {formatDuration(videoCurrentTime)} / {formatDuration(videoDuration)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                        <button
+                          onClick={() => setIsCinemaMode(!isCinemaMode)}
+                          title="Theater Mode"
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: isCinemaMode ? '#ff0000' : '#fff',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          <Tv size={20} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (videoRef.current) {
+                              if (document.fullscreenElement) {
+                                document.exitFullscreen();
+                              } else {
+                                videoRef.current.requestFullscreen();
+                              }
+                            }
+                          }}
+                          style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer' }}
+                        >
+                          <Maximize size={20} />
                         </button>
                       </div>
                     </div>
                   </div>
-                ))}
+                </div>
+
+                {/* Video Title */}
+                <h1 style={{ fontSize: '20px', fontWeight: 700, margin: '16px 0 12px 0', color: '#fff' }}>
+                  {activeVideo.title}
+                </h1>
+
+                {/* Channel Bar & Action Buttons */}
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '16px',
+                    paddingBottom: '16px',
+                    borderBottom: '1px solid #272727'
+                  }}
+                >
+                  {/* Channel Details */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <img
+                      src={activeVideo.channelAvatar}
+                      alt={activeVideo.channel}
+                      style={{ width: '42px', height: '42px', borderRadius: '50%', objectFit: 'cover' }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '15px', color: '#fff', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span>{activeVideo.channel}</span>
+                        {activeVideo.verified && <Check size={14} color="#aaaaaa" />}
+                      </div>
+                      <div style={{ fontSize: '12px', color: '#aaaaaa' }}>{activeVideo.subscribers}</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setIsSubscribed(!isSubscribed);
+                        showToast(isSubscribed ? 'Unsubscribed' : 'Subscribed with all notifications!');
+                      }}
+                      style={{
+                        marginLeft: '12px',
+                        padding: '10px 18px',
+                        background: isSubscribed ? '#272727' : '#ffffff',
+                        color: isSubscribed ? '#fff' : '#0f0f0f',
+                        border: 'none',
+                        borderRadius: '20px',
+                        fontWeight: 600,
+                        fontSize: '14px',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s'
+                      }}
+                    >
+                      {isSubscribed ? 'Subscribed' : 'Subscribe'}
+                    </button>
+                  </div>
+
+                  {/* Actions (Like, Dislike, Share, Watch Later) */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {/* Joined Like / Dislike Pill */}
+                    <div style={{ display: 'flex', background: '#272727', borderRadius: '20px', overflow: 'hidden' }}>
+                      <button
+                        onClick={toggleLike}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: isLiked ? '#3ea6ff' : '#fff',
+                          padding: '8px 14px',
+                          cursor: 'pointer',
+                          fontSize: '13px',
+                          fontWeight: 600
+                        }}
+                      >
+                        <ThumbsUp size={16} />
+                        <span>{videoLikes.toLocaleString()}</span>
+                      </button>
+                      <div style={{ width: '1px', background: '#3f3f3f' }} />
+                      <button
+                        onClick={toggleDislike}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          background: 'transparent',
+                          border: 'none',
+                          color: isDisliked ? '#3ea6ff' : '#fff',
+                          padding: '8px 14px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <ThumbsDown size={16} />
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={handleShare}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        background: '#272727',
+                        border: 'none',
+                        color: '#fff',
+                        padding: '8px 14px',
+                        borderRadius: '20px',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontWeight: 600
+                      }}
+                    >
+                      <Share2 size={16} />
+                      <span>Share</span>
+                    </button>
+
+                    <button
+                      onClick={toggleWatchLater}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        background: '#272727',
+                        border: 'none',
+                        color: isSavedWatchLater ? '#22c55e' : '#fff',
+                        padding: '8px 14px',
+                        borderRadius: '20px',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontWeight: 600
+                      }}
+                    >
+                      {isSavedWatchLater ? <BookmarkCheck size={16} /> : <Bookmark size={16} />}
+                      <span>{isSavedWatchLater ? 'Saved' : 'Save'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Expandable Description Box */}
+                <div
+                  onClick={() => setDescriptionExpanded(!descriptionExpanded)}
+                  style={{
+                    background: '#272727',
+                    borderRadius: '12px',
+                    padding: '14px',
+                    marginTop: '16px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    lineHeight: 1.5
+                  }}
+                >
+                  <div style={{ fontWeight: 700, color: '#fff', marginBottom: '6px' }}>
+                    {activeVideo.views} • {activeVideo.time}
+                  </div>
+                  <div
+                    style={{
+                      color: '#e0e0e0',
+                      whiteSpace: 'pre-line',
+                      maxHeight: descriptionExpanded ? 'none' : '65px',
+                      overflow: 'hidden'
+                    }}
+                  >
+                    {activeVideo.description}
+                  </div>
+                  <div style={{ fontWeight: 600, color: '#aaa', marginTop: '6px', fontSize: '12px' }}>
+                    {descriptionExpanded ? 'Show less' : '...more'}
+                  </div>
+                </div>
+
+                {/* Interactive Real-Time Comments Section */}
+                <div style={{ marginTop: '28px' }}>
+                  <div style={{ fontSize: '20px', fontWeight: 700, color: '#fff', marginBottom: '18px' }}>
+                    {comments.length} Comments
+                  </div>
+
+                  {/* Add Comment Box */}
+                  <form onSubmit={handlePostComment} style={{ display: 'flex', gap: '14px', marginBottom: '28px' }}>
+                    <div
+                      style={{
+                        width: '40px',
+                        height: '40px',
+                        borderRadius: '50%',
+                        background: '#f97316',
+                        color: '#fff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontWeight: 700,
+                        flexShrink: 0
+                      }}
+                    >
+                      {currentUser ? currentUser.displayName.charAt(0).toUpperCase() : 'G'}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <input
+                        type="text"
+                        value={newCommentInput}
+                        onChange={(e) => setNewCommentInput(e.target.value)}
+                        placeholder="Add a comment..."
+                        style={{
+                          width: '100%',
+                          padding: '8px 0',
+                          background: 'transparent',
+                          border: 'none',
+                          borderBottom: '1px solid #717171',
+                          color: '#fff',
+                          fontSize: '14px',
+                          outline: 'none'
+                        }}
+                      />
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+                        <button
+                          type="button"
+                          onClick={() => setNewCommentInput('')}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: '#aaa',
+                            padding: '6px 12px',
+                            cursor: 'pointer',
+                            fontSize: '13px'
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={!newCommentInput.trim()}
+                          style={{
+                            background: newCommentInput.trim() ? '#3ea6ff' : '#272727',
+                            color: newCommentInput.trim() ? '#000' : '#717171',
+                            border: 'none',
+                            padding: '6px 16px',
+                            borderRadius: '18px',
+                            fontWeight: 600,
+                            cursor: newCommentInput.trim() ? 'pointer' : 'default',
+                            fontSize: '13px'
+                          }}
+                        >
+                          Comment
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+
+                  {/* Comments List */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                    {comments.map((comment) => (
+                      <div key={comment.id} style={{ display: 'flex', gap: '14px' }}>
+                        <img
+                          src={comment.avatar}
+                          alt={comment.user}
+                          style={{ width: '40px', height: '40px', borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }}
+                        />
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                            <span style={{ fontWeight: 600, fontSize: '13px', color: '#fff' }}>@{comment.user}</span>
+                            <span style={{ fontSize: '12px', color: '#aaa' }}>{comment.time}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '14px', color: '#e0e0e0', lineHeight: 1.4 }}>
+                            {comment.text}
+                          </p>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '8px' }}>
+                            <button
+                              onClick={() => {
+                                setComments(prev =>
+                                  prev.map(c =>
+                                    c.id === comment.id
+                                      ? { ...c, likes: c.isLiked ? c.likes - 1 : c.likes + 1, isLiked: !c.isLiked }
+                                      : c
+                                  )
+                                );
+                              }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                background: 'transparent',
+                                border: 'none',
+                                color: comment.isLiked ? '#3ea6ff' : '#aaa',
+                                cursor: 'pointer',
+                                fontSize: '12px'
+                              }}
+                            >
+                              <ThumbsUp size={14} />
+                              <span>{comment.likes > 0 ? comment.likes : ''}</span>
+                            </button>
+                            <button style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: '12px' }}>
+                              Reply
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Up Next / Recommendations Sidebar */}
+              {!isCinemaMode && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <h3 style={{ margin: '0 0 8px 0', fontSize: '16px', fontWeight: 700, color: '#fff' }}>Up Next</h3>
+                  {videoDatabase
+                    .filter((v) => v.id !== activeVideo.id)
+                    .map((item) => (
+                      <div
+                        key={item.id}
+                        onClick={() => handleWatchVideo(item)}
+                        style={{ display: 'flex', gap: '10px', cursor: 'pointer' }}
+                      >
+                        <div
+                          style={{
+                            position: 'relative',
+                            width: '160px',
+                            height: '90px',
+                            borderRadius: '8px',
+                            overflow: 'hidden',
+                            flexShrink: 0,
+                            background: '#222'
+                          }}
+                        >
+                          <img
+                            src={item.thumbnail}
+                            alt={item.title}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                          <span
+                            style={{
+                              position: 'absolute',
+                              bottom: '4px',
+                              right: '4px',
+                              background: 'rgba(0,0,0,0.8)',
+                              color: '#fff',
+                              fontSize: '11px',
+                              fontWeight: 600,
+                              padding: '1px 4px',
+                              borderRadius: '3px'
+                            }}
+                          >
+                            {item.duration}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                          <h4
+                            style={{
+                              margin: 0,
+                              fontSize: '13px',
+                              fontWeight: 600,
+                              color: '#fff',
+                              lineHeight: 1.3,
+                              display: '-webkit-box',
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: 'vertical',
+                              overflow: 'hidden'
+                            }}
+                          >
+                            {item.title}
+                          </h4>
+                          <span style={{ fontSize: '12px', color: '#aaa', marginTop: '4px' }}>{item.channel}</span>
+                          <span style={{ fontSize: '12px', color: '#aaa' }}>{item.views}</span>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ================= VIEW: SHORTS (VERTICAL 9:16 PLAYER) ================= */}
+          {currentView === 'shorts' && (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                minHeight: 'calc(100vh - 120px)',
+                padding: '20px 0'
+              }}
+            >
+              {(() => {
+                const short = shortsDatabase[currentShortIndex];
+                const isShortLiked = shortsLiked[short.id];
+                return (
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: '16px' }}>
+                    {/* Vertical Player Box */}
+                    <div
+                      style={{
+                        position: 'relative',
+                        width: '380px',
+                        height: '675px',
+                        borderRadius: '16px',
+                        overflow: 'hidden',
+                        background: '#000',
+                        boxShadow: '0 12px 36px rgba(0,0,0,0.8)'
+                      }}
+                    >
+                      <video
+                        src={short.videoUrl}
+                        autoPlay
+                        loop
+                        playsInline
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+
+                      {/* Bottom Info Overlay */}
+                      <div
+                        style={{
+                          position: 'absolute',
+                          bottom: 0,
+                          left: 0,
+                          right: 0,
+                          padding: '20px 16px',
+                          background: 'linear-gradient(transparent, rgba(0,0,0,0.9))'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                          <img
+                            src={short.channelAvatar}
+                            alt={short.channel}
+                            style={{ width: '36px', height: '36px', borderRadius: '50%' }}
+                          />
+                          <span style={{ fontWeight: 600, fontSize: '14px', color: '#fff' }}>@{short.channel}</span>
+                          <button
+                            style={{
+                              background: '#fff',
+                              color: '#000',
+                              border: 'none',
+                              padding: '4px 12px',
+                              borderRadius: '14px',
+                              fontWeight: 700,
+                              fontSize: '12px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            Subscribe
+                          </button>
+                        </div>
+                        <h3 style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#fff', fontWeight: 500 }}>
+                          {short.title}
+                        </h3>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#aaa' }}>
+                          <Music size={14} />
+                          <span>{short.musicTitle}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Side Action Bar */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '18px', paddingBottom: '20px' }}>
+                      <button
+                        onClick={() => {
+                          setShortsLiked(prev => ({ ...prev, [short.id]: !isShortLiked }));
+                          showToast(isShortLiked ? 'Unliked' : 'Liked Short');
+                        }}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '4px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: isShortLiked ? '#3ea6ff' : '#fff',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#272727', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <ThumbsUp size={22} />
+                        </div>
+                        <span style={{ fontSize: '12px' }}>{isShortLiked ? short.likes + 1 : short.likes}</span>
+                      </button>
+
+                      <button
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '4px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#fff',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#272727', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <ThumbsDown size={22} />
+                        </div>
+                        <span style={{ fontSize: '12px' }}>Dislike</span>
+                      </button>
+
+                      <button
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '4px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#fff',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#272727', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <MessageSquare size={22} />
+                        </div>
+                        <span style={{ fontSize: '12px' }}>{short.comments}</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(window.location.href);
+                          showToast('Short link copied!');
+                        }}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: '4px',
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#fff',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#272727', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Share2 size={22} />
+                        </div>
+                        <span style={{ fontSize: '12px' }}>Share</span>
+                      </button>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+                        <button
+                          disabled={currentShortIndex === 0}
+                          onClick={() => setCurrentShortIndex(prev => Math.max(0, prev - 1))}
+                          style={{
+                            background: '#272727',
+                            border: 'none',
+                            color: '#fff',
+                            width: '48px',
+                            height: '48px',
+                            borderRadius: '50%',
+                            cursor: currentShortIndex > 0 ? 'pointer' : 'default',
+                            opacity: currentShortIndex > 0 ? 1 : 0.4
+                          }}
+                        >
+                          ▲
+                        </button>
+                        <button
+                          disabled={currentShortIndex === shortsDatabase.length - 1}
+                          onClick={() => setCurrentShortIndex(prev => Math.min(shortsDatabase.length - 1, prev + 1))}
+                          style={{
+                            background: '#272727',
+                            border: 'none',
+                            color: '#fff',
+                            width: '48px',
+                            height: '48px',
+                            borderRadius: '50%',
+                            cursor: currentShortIndex < shortsDatabase.length - 1 ? 'pointer' : 'default',
+                            opacity: currentShortIndex < shortsDatabase.length - 1 ? 1 : 0.4
+                          }}
+                        >
+                          ▼
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* ================= VIEW: WATCH LATER / LIKED VIDEOS ================= */}
+          {(currentView === 'watchLater' || currentView === 'liked') && (
+            <div style={{ padding: '24px 0' }}>
+              <h2 style={{ fontSize: '24px', fontWeight: 800, margin: '0 0 20px 0', color: '#fff' }}>
+                {currentView === 'watchLater' ? 'Watch Later Playlist' : 'Liked Videos'}
+              </h2>
+              {(() => {
+                const list = currentView === 'watchLater' ? watchLaterList : likedList;
+                const matched = videoDatabase.filter(v => list.includes(v.id));
+
+                if (matched.length === 0) {
+                  return (
+                    <div style={{ padding: '48px', textAlign: 'center', background: '#1c1c1c', borderRadius: '12px', color: '#aaa' }}>
+                      <Clock size={40} style={{ margin: '0 auto 12px auto' }} />
+                      <p style={{ margin: 0, fontSize: '16px', color: '#fff', fontWeight: 600 }}>
+                        {currentView === 'watchLater' ? 'Your Watch Later list is empty' : 'No liked videos yet'}
+                      </p>
+                      <p style={{ margin: '8px 0 16px 0', fontSize: '13px' }}>
+                        Browse videos and click "Save" or "Like" to build your library.
+                      </p>
+                      <button
+                        onClick={() => setCurrentView('home')}
+                        style={{
+                          padding: '8px 16px',
+                          background: '#ff0000',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: '20px',
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Explore Videos
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    {matched.map(item => (
+                      <div
+                        key={item.id}
+                        onClick={() => handleWatchVideo(item)}
+                        style={{
+                          display: 'flex',
+                          gap: '16px',
+                          background: '#1a1a1a',
+                          padding: '12px',
+                          borderRadius: '10px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <div style={{ position: 'relative', width: '220px', height: '124px', borderRadius: '8px', overflow: 'hidden' }}>
+                          <img src={item.thumbnail} alt={item.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          <span style={{ position: 'absolute', bottom: '6px', right: '6px', background: 'rgba(0,0,0,0.8)', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>
+                            {item.duration}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                          <h3 style={{ margin: '0 0 6px 0', fontSize: '16px', fontWeight: 600, color: '#fff' }}>{item.title}</h3>
+                          <div style={{ fontSize: '13px', color: '#aaa' }}>{item.channel}</div>
+                          <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>{item.views} • {item.time}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+        </main>
+      </div>
+
+      {/* ================= MODAL: SIGN IN ================= */}
+      {showSignInModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.8)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div
+            style={{
+              background: '#212121',
+              borderRadius: '16px',
+              padding: '32px',
+              width: '420px',
+              border: '1px solid #383838'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: '#fff' }}>Sign in to YouTube</h2>
+              <button
+                onClick={() => setShowSignInModal(false)}
+                style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {authError && (
+              <div style={{ background: 'rgba(239, 68, 68, 0.2)', border: '1px solid #ef4444', color: '#fca5a5', padding: '10px', borderRadius: '8px', fontSize: '13px', marginBottom: '16px' }}>
+                {authError}
               </div>
             )}
-          </div>
-        )}
 
-        {/* ================= CLOUDFLARE R2 UPLOADER ================= */}
-        {activeTab === 'uploader' && <ChunkUploader />}
-      </main>
+            <form onSubmit={handleSignIn} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Login ID / Username / Email
+                </label>
+                <input
+                  type="text"
+                  value={authLoginId}
+                  onChange={(e) => setAuthLoginId(e.target.value)}
+                  placeholder="e.g. vasanth or creator@platform.io"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Password
+                </label>
+                <input
+                  type="password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Enter password"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <button
+                type="submit"
+                style={{
+                  marginTop: '8px',
+                  padding: '12px',
+                  background: '#3ea6ff',
+                  color: '#000',
+                  border: 'none',
+                  borderRadius: '24px',
+                  fontWeight: 700,
+                  fontSize: '15px',
+                  cursor: 'pointer'
+                }}
+              >
+                Sign In
+              </button>
+            </form>
+
+            <div style={{ marginTop: '20px', textAlign: 'center', fontSize: '13px', color: '#aaa' }}>
+              Don't have a Login ID?{' '}
+              <span
+                onClick={() => { setShowSignInModal(false); setShowRegisterModal(true); setAuthError(''); }}
+                style={{ color: '#3ea6ff', cursor: 'pointer', fontWeight: 600 }}
+              >
+                Create Login ID
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: CREATE LOGIN ID / REGISTER ================= */}
+      {showRegisterModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.8)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div
+            style={{
+              background: '#212121',
+              borderRadius: '16px',
+              padding: '32px',
+              width: '440px',
+              border: '1px solid #383838'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: '#fff' }}>Create Your Login ID</h2>
+              <button
+                onClick={() => setShowRegisterModal(false)}
+                style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {authError && (
+              <div style={{ background: 'rgba(239, 68, 68, 0.2)', border: '1px solid #ef4444', color: '#fca5a5', padding: '10px', borderRadius: '8px', fontSize: '13px', marginBottom: '16px' }}>
+                {authError}
+              </div>
+            )}
+
+            <form onSubmit={handleRegister} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Choose Login ID / Username
+                </label>
+                <input
+                  type="text"
+                  value={regUsername}
+                  onChange={(e) => setRegUsername(e.target.value)}
+                  placeholder="e.g. vasanth_music"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Channel / Display Name
+                </label>
+                <input
+                  type="text"
+                  value={regDisplayName}
+                  onChange={(e) => setRegDisplayName(e.target.value)}
+                  placeholder="e.g. Vasanth Visuals"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  value={regEmail}
+                  onChange={(e) => setRegEmail(e.target.value)}
+                  placeholder="e.g. vasanth@wavemusic.dpdns.org"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Password (min 6 characters)
+                </label>
+                <input
+                  type="password"
+                  value={regPassword}
+                  onChange={(e) => setRegPassword(e.target.value)}
+                  placeholder="Choose password"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Confirm Password
+                </label>
+                <input
+                  type="password"
+                  value={regConfirmPassword}
+                  onChange={(e) => setRegConfirmPassword(e.target.value)}
+                  placeholder="Re-enter password"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <button
+                type="submit"
+                style={{
+                  marginTop: '8px',
+                  padding: '12px',
+                  background: '#ff0000',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '24px',
+                  fontWeight: 700,
+                  fontSize: '15px',
+                  cursor: 'pointer'
+                }}
+              >
+                Create Account & Join
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: CHANGE PASSWORD ================= */}
+      {showPasswordChangeModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.8)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div
+            style={{
+              background: '#212121',
+              borderRadius: '16px',
+              padding: '32px',
+              width: '420px',
+              border: '1px solid #383838'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 700, color: '#fff' }}>Change Password</h2>
+              <button
+                onClick={() => setShowPasswordChangeModal(false)}
+                style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {authError && (
+              <div style={{ background: 'rgba(239, 68, 68, 0.2)', border: '1px solid #ef4444', color: '#fca5a5', padding: '10px', borderRadius: '8px', fontSize: '13px', marginBottom: '16px' }}>
+                {authError}
+              </div>
+            )}
+
+            <form onSubmit={handleChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Current Password
+                </label>
+                <input
+                  type="password"
+                  value={pwdCurrent}
+                  onChange={(e) => setPwdCurrent(e.target.value)}
+                  placeholder="Enter current password"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  New Password (min 6 characters)
+                </label>
+                <input
+                  type="password"
+                  value={pwdNew}
+                  onChange={(e) => setPwdNew(e.target.value)}
+                  placeholder="Enter new password"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '12px', color: '#aaa', marginBottom: '6px' }}>
+                  Confirm New Password
+                </label>
+                <input
+                  type="password"
+                  value={pwdConfirm}
+                  onChange={(e) => setPwdConfirm(e.target.value)}
+                  placeholder="Confirm new password"
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    background: '#121212',
+                    border: '1px solid #3f3f3f',
+                    borderRadius: '8px',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
+              </div>
+
+              <button
+                type="submit"
+                style={{
+                  marginTop: '10px',
+                  padding: '12px',
+                  background: '#22c55e',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: '24px',
+                  fontWeight: 700,
+                  fontSize: '15px',
+                  cursor: 'pointer'
+                }}
+              >
+                Update Password
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: VIDEO UPLOAD (R2 DISTRIBUTED) ================= */}
+      {showUploadModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div
+            style={{
+              background: '#212121',
+              borderRadius: '16px',
+              padding: '28px',
+              width: '560px',
+              maxWidth: '90vw',
+              border: '1px solid #383838'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#fff' }}>Upload Video to Cloudflare R2</h2>
+              <button
+                onClick={() => setShowUploadModal(false)}
+                style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer' }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <ChunkUploader />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
