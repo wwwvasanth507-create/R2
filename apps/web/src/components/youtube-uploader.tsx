@@ -366,16 +366,17 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     xhr.send(file);
   };
 
-  // 2. Chunked Multi-Part Upload (for videos > 250 MB, split into 250 MB slices)
+  // 2. Chunked Multi-Part Upload (for videos > 100 MB, split into 100 MB slices across Cloudflare R2 buckets)
   const handleChunkedUpload = async (finalThumbnailUrl: string) => {
     if (!file) return;
 
-    const CHUNK_SIZE = 250 * 1024 * 1024; // 250 MB
+    // 95 MiB = 99,614,720 bytes (strictly under Cloudflare's 100 MB HTTP proxy limit)
+    const CHUNK_SIZE = 95 * 1024 * 1024;
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
     setStep('uploading');
     setUploadPercent(0);
-    setTransferredText(`Initializing 250 MB chunked session (0 of ${totalChunks} chunks)...`);
+    setTransferredText(`Initializing 100 MB chunked session (0 of ${totalChunks} chunks)...`);
 
     // Step A: Initialize Chunked Session
     let initData: any;
@@ -580,14 +581,14 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
       finalThumbnailUrl = 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800';
     }
 
-    // 2. Check 250 MB Threshold
-    const CHUNK_SIZE_THRESHOLD = 250 * 1024 * 1024; // 250 MB
+    // 2. Check 100 MB Threshold (Cloudflare Tunnel & Proxy Safe Limit)
+    const CHUNK_SIZE_THRESHOLD = 95 * 1024 * 1024; // 95 MB (~99.6 MB decimal, safely under Cloudflare's 100 MB ceiling)
 
     if (file.size <= CHUNK_SIZE_THRESHOLD) {
-      // <= 250 MB: Upload straightly
+      // <= 100 MB: Upload straightly
       await handleDirectUpload(finalThumbnailUrl);
     } else {
-      // > 250 MB: Split into 250 MB chunks and upload separately
+      // > 100 MB: Split into 100 MB chunks and upload separately across Cloudflare R2 buckets
       await handleChunkedUpload(finalThumbnailUrl);
     }
   };
@@ -787,7 +788,7 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
               <FileVideo size={20} color="#3ea6ff" />
               <span style={{ fontSize: '13px', fontWeight: 500, color: '#fff' }}>{file?.name}</span>
               <span style={{ fontSize: '12px', color: '#888' }}>({fileSizeFormatted})</span>
-              {file && file.size > 250 * 1024 * 1024 ? (
+              {file && file.size > 95 * 1024 * 1024 ? (
                 <span
                   style={{
                     fontSize: '11px',
@@ -799,7 +800,7 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
                     fontWeight: 600
                   }}
                 >
-                  ⚡ Auto-Split: {Math.ceil(file.size / (250 * 1024 * 1024))} x 250 MB chunks
+                  ⚡ Auto-Split: {Math.ceil(file.size / (95 * 1024 * 1024))} x 100 MB chunks (Multi-Bucket R2)
                 </span>
               ) : (
                 <span
@@ -813,7 +814,7 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
                     fontWeight: 600
                   }}
                 >
-                  ✓ Direct Stream Upload (&le; 250 MB)
+                  ✓ Direct Stream Upload (&le; 100 MB)
                 </span>
               )}
             </div>
@@ -1304,7 +1305,11 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
               }}
             >
               <img
-                src={uploadedVideo.thumbnailUrl || thumbnailUrl}
+                src={
+                  uploadedVideo.thumbnailUrl?.startsWith('http')
+                    ? uploadedVideo.thumbnailUrl
+                    : (uploadedVideo.thumbnailUrl ? `${apiBase}${uploadedVideo.thumbnailUrl}` : thumbnailUrl)
+                }
                 alt="Thumbnail"
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               />
@@ -1365,7 +1370,9 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
                   views: '0 views',
                   time: 'Just now',
                   duration: '2:00',
-                  thumbnail: uploadedVideo.thumbnailUrl || thumbnailUrl,
+                  thumbnail: uploadedVideo.thumbnailUrl?.startsWith('http')
+                    ? uploadedVideo.thumbnailUrl
+                    : (uploadedVideo.thumbnailUrl ? `${apiBase}${uploadedVideo.thumbnailUrl}` : thumbnailUrl),
                   videoUrl: uploadedVideo.masterPlaylistUrl.startsWith('http')
                     ? uploadedVideo.masterPlaylistUrl
                     : `${apiBase}${uploadedVideo.masterPlaylistUrl}`,

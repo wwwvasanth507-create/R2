@@ -174,12 +174,12 @@ describe('Unified Backend API Integration Suite', () => {
     assert.strictEqual(updated.logicalQuotaBytes, 10737418240);
   });
 
-  it('250 MB Chunking & Virtual Reassembly: splits 2 GB movie into 250 MB chunks and streams seamlessly', async () => {
+  it('100 MB Chunking & Virtual Reassembly: splits 2 GB movie into 100 MB chunks and streams seamlessly', async () => {
     const twoGiB = 2 * 1024 * 1024 * 1024; // 2,147,483,648 bytes
-    const chunkSize = 250 * 1024 * 1024; // 250 MB = 262,144,000 bytes
-    const expectedChunkCount = Math.ceil(twoGiB / chunkSize); // 9 chunks
+    const chunkSize = 95 * 1024 * 1024; // 95 MiB = ~99.6 MB (safely under Cloudflare 100 MB proxy limit)
+    const expectedChunkCount = Math.ceil(twoGiB / chunkSize); // 22 chunks
 
-    assert.strictEqual(expectedChunkCount, 9);
+    assert.strictEqual(expectedChunkCount, 22);
 
     // 1. Plan chunk distribution for a 2 GB movie
     const eligibleBuckets = storageManager.getEligibleBuckets();
@@ -193,17 +193,17 @@ describe('Unified Backend API Integration Suite', () => {
       chunkSize
     );
 
-    assert.strictEqual(plan.chunkCount, 9);
-    assert.strictEqual(plan.chunks.length, 9);
+    assert.strictEqual(plan.chunkCount, 22);
+    assert.strictEqual(plan.chunks.length, 22);
     assert.strictEqual(plan.chunks[0].manifest.byteStart, 0);
     assert.strictEqual(plan.chunks[0].manifest.byteEnd, chunkSize - 1);
     assert.strictEqual(plan.chunks[0].manifest.chunkSizeBytes, chunkSize);
 
     // Verify last chunk takes only remaining bytes
-    const lastChunk = plan.chunks[8].manifest;
-    assert.strictEqual(lastChunk.byteStart, 8 * chunkSize);
+    const lastChunk = plan.chunks[21].manifest;
+    assert.strictEqual(lastChunk.byteStart, 21 * chunkSize);
     assert.strictEqual(lastChunk.byteEnd, twoGiB - 1);
-    assert.strictEqual(lastChunk.chunkSizeBytes, twoGiB - 8 * chunkSize);
+    assert.strictEqual(lastChunk.chunkSizeBytes, twoGiB - 21 * chunkSize);
 
     // 2. Create file manifest and verify chunks
     const chunks = plan.chunks.map((c) => ({
@@ -217,7 +217,7 @@ describe('Unified Backend API Integration Suite', () => {
       originalFilename: 'Interstellar_2014_4K_Remux.mkv',
       mimeType: 'video/x-matroska',
       totalSizeBytes: twoGiB,
-      chunkCount: 9,
+      chunkCount: 22,
       chunkSizeBytes: chunkSize,
       uploadStatus: 'READY' as any,
       processingStatus: 'COMPLETED' as any,
@@ -235,9 +235,9 @@ describe('Unified Backend API Integration Suite', () => {
     assert.strictEqual(headRes.headers['Content-Length'], twoGiB);
     assert.strictEqual(headRes.headers['Accept-Ranges'], 'bytes');
 
-    // Test byte range parsing across 250 MB chunk boundary (e.g. byte 245 MB to 255 MB)
-    const crossChunkStart = 245 * 1024 * 1024;
-    const crossChunkEnd = 255 * 1024 * 1024;
+    // Test byte range parsing across 100 MB chunk boundary (e.g. byte 90 MB to 100 MB)
+    const crossChunkStart = 90 * 1024 * 1024;
+    const crossChunkEnd = 100 * 1024 * 1024;
     const rangeHeader = `bytes=${crossChunkStart}-${crossChunkEnd}`;
 
     const parsedRange = storageManager.rangeGateway.parseRangeHeader(rangeHeader, twoGiB);
@@ -256,7 +256,7 @@ describe('Unified Backend API Integration Suite', () => {
     // Verify slice offsets
     const slice0Start = Math.max(0, crossChunkStart - affectedChunks[0].byteStart);
     const slice0End = Math.min(affectedChunks[0].chunkSizeBytes - 1, crossChunkEnd - affectedChunks[0].byteStart);
-    assert.strictEqual(slice0Start, 245 * 1024 * 1024);
+    assert.strictEqual(slice0Start, 90 * 1024 * 1024);
     assert.strictEqual(slice0End, chunkSize - 1);
 
     const slice1Start = Math.max(0, crossChunkStart - affectedChunks[1].byteStart);

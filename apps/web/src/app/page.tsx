@@ -383,7 +383,9 @@ export default function YouTubePlatform() {
             duration: `${Math.floor((sv.durationSeconds || 120) / 60)}:${String(
               (sv.durationSeconds || 120) % 60
             ).padStart(2, '0')}`,
-            thumbnail: sv.thumbnailUrl || 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800',
+            thumbnail: sv.thumbnailUrl?.startsWith('http')
+              ? sv.thumbnailUrl
+              : `${API_BASE}${sv.thumbnailUrl || ''}`,
             videoUrl: sv.masterPlaylistUrl?.startsWith('http')
               ? sv.masterPlaylistUrl
               : `${API_BASE}${sv.masterPlaylistUrl}`,
@@ -417,7 +419,9 @@ export default function YouTubePlatform() {
       duration: `${Math.floor((sv.durationSeconds || 120) / 60)}:${String(
         (sv.durationSeconds || 120) % 60
       ).padStart(2, '0')}`,
-      thumbnail: sv.thumbnailUrl || 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800',
+      thumbnail: sv.thumbnailUrl?.startsWith('http')
+        ? sv.thumbnailUrl
+        : `${API_BASE}${sv.thumbnailUrl || ''}`,
       videoUrl: sv.masterPlaylistUrl?.startsWith('http')
         ? sv.masterPlaylistUrl
         : `${API_BASE}${sv.masterPlaylistUrl}`,

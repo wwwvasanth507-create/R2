@@ -797,7 +797,7 @@ app.post('/api/videos/chunked/init', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Valid totalSizeBytes (> 0) is required.' });
     }
 
-    const chunkSizeBytes = Number(reqChunkSizeBytes) || (250 * 1024 * 1024); // 250 MB
+    const chunkSizeBytes = Number(reqChunkSizeBytes) || (95 * 1024 * 1024); // 95 MB (~99.6 MB safe chunk size under Cloudflare 100 MB proxy limit)
     const chunkCount = Number(reqChunkCount) || Math.ceil(parsedTotalSizeBytes / chunkSizeBytes);
 
     // Get active bucket(s)
@@ -824,10 +824,60 @@ app.post('/api/videos/chunked/init', async (req: Request, res: Response) => {
     }
 
     // Check remaining quota across buckets
-    const totalAvail = eligibleBuckets.reduce(
+    let totalAvail = eligibleBuckets.reduce(
       (acc, b) => acc + Math.max(0, b.logicalQuotaBytes - (b.usedStorageBytes + b.reservedStorageBytes)),
       0
     );
+
+    // If large video (e.g. 20 GB to 50 GB) exceeds available space,
+    // dynamically auto-provision sequential 8 GiB bucket partitions under Cloudflare account!
+    const activeAccount = db.storageAccounts.values().next().value;
+    if (parsedTotalSizeBytes > totalAvail && activeAccount) {
+      const neededBytes = parsedTotalSizeBytes - totalAvail;
+      const additionalBucketsNeeded = Math.ceil(neededBytes / DEFAULT_LOGICAL_QUOTA_BYTES);
+      const provider = storageManager.getProvider(activeAccount.id);
+
+      console.log(`[STORAGE ALLOCATION] Large video (${(parsedTotalSizeBytes / (1024 * 1024 * 1024)).toFixed(1)} GB) dynamically allocating ${additionalBucketsNeeded} new 8 GiB bucket partition(s)...`);
+
+      for (let b = 1; b <= additionalBucketsNeeded; b++) {
+        const nextBucketNum = eligibleBuckets.length + 1;
+        const newBucketName = `vasanth${String(nextBucketNum).padStart(2, '0')}-r2`;
+
+        // Create bucket on Cloudflare R2 if it doesn't already exist
+        try {
+          if ((provider as any).client) {
+            const { CreateBucketCommand } = require('@aws-sdk/client-s3');
+            await (provider as any).client.send(new CreateBucketCommand({ Bucket: newBucketName }));
+            console.log(`[STORAGE ALLOCATION] Provisioned Cloudflare R2 bucket: "${newBucketName}"`);
+          }
+        } catch (bktErr: any) {
+          console.warn(`[STORAGE ALLOCATION] Bucket ${newBucketName} notice:`, bktErr.message);
+        }
+
+        const newBucket: IStorageBucket = {
+          id: crypto.randomUUID(),
+          bucketName: newBucketName,
+          storageAccountId: activeAccount.id,
+          region: 'auto',
+          logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES, // Strictly 8 GiB quota per bucket
+          usedStorageBytes: 0,
+          reservedStorageBytes: 0,
+          availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
+          priority: nextBucketNum,
+          healthStatus: BucketHealthStatus.HEALTHY,
+          isEnabled: true,
+          objectCount: 0,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+
+        db.storageBuckets.set(newBucket.id, newBucket);
+        await db.saveBucketToPostgres(newBucket);
+        eligibleBuckets.push(newBucket);
+        totalAvail += DEFAULT_LOGICAL_QUOTA_BYTES;
+      }
+    }
+
     if (parsedTotalSizeBytes > totalAvail) {
       return res.status(400).json({
         error: `Storage capacity exceeded. Required: ${(parsedTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB, Available across active buckets: ${(totalAvail / (1024 * 1024)).toFixed(1)} MB.`
