@@ -50,6 +50,7 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { ChunkUploader } from '../components/chunk-uploader';
+import { YouTubeUploader } from '../components/youtube-uploader';
 
 const API_BASE = typeof window !== 'undefined' && window.location.hostname.includes('wavemusic')
   ? 'https://api.wavemusic.dpdns.org'
@@ -351,7 +352,10 @@ export default function YouTubePlatform() {
     'Shorts'
   ];
 
-  // Restore session
+  // Dynamic Video Feed State (synced with Cloudflare R2 and Server Database)
+  const [videos, setVideos] = useState<VideoItem[]>(videoDatabase);
+
+  // Restore session & fetch fresh video library from backend & Cloudflare R2
   useEffect(() => {
     const savedUser = localStorage.getItem('platform_user');
     if (savedUser) {
@@ -359,10 +363,76 @@ export default function YouTubePlatform() {
         setCurrentUser(JSON.parse(savedUser));
       } catch {}
     }
+
+    fetch(`${API_BASE}/api/youtube/videos`)
+      .then((r) => r.json())
+      .then((serverVideos) => {
+        if (Array.isArray(serverVideos) && serverVideos.length > 0) {
+          const mapped: VideoItem[] = serverVideos.map((sv: any) => ({
+            id: sv.id,
+            title: sv.title,
+            channel: sv.channel ? sv.channel.title : 'WaveMusic Creator',
+            channelAvatar:
+              sv.channel?.avatarUrl ||
+              'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+            subscribers: sv.channel
+              ? `${(sv.channel.subscriberCount / 1000).toFixed(0)}K subscribers`
+              : '10K subscribers',
+            views: `${sv.viewsCount || 0} views`,
+            time: 'Recently uploaded',
+            duration: `${Math.floor((sv.durationSeconds || 120) / 60)}:${String(
+              (sv.durationSeconds || 120) % 60
+            ).padStart(2, '0')}`,
+            thumbnail: sv.thumbnailUrl || 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800',
+            videoUrl: sv.masterPlaylistUrl?.startsWith('http')
+              ? sv.masterPlaylistUrl
+              : `${API_BASE}${sv.masterPlaylistUrl}`,
+            category: sv.tags && sv.tags[0] ? sv.tags[0] : 'Music',
+            description: sv.description || '',
+            likesCount: sv.likesCount || 0,
+            commentsCount: sv.commentCount || 0,
+            verified: true
+          }));
+
+          setVideos((prev) => {
+            const serverIds = new Set(mapped.map((m) => m.id));
+            return [...mapped, ...prev.filter((p) => !serverIds.has(p.id))];
+          });
+        }
+      })
+      .catch(() => {});
   }, []);
 
+  const handleUploadSuccess = (sv: any) => {
+    const newVideo: VideoItem = {
+      id: sv.id,
+      title: sv.title,
+      channel: sv.channel ? sv.channel.title : 'WaveMusic Creator',
+      channelAvatar:
+        sv.channel?.avatarUrl ||
+        'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+      subscribers: '10K subscribers',
+      views: '0 views',
+      time: 'Just now',
+      duration: `${Math.floor((sv.durationSeconds || 120) / 60)}:${String(
+        (sv.durationSeconds || 120) % 60
+      ).padStart(2, '0')}`,
+      thumbnail: sv.thumbnailUrl || 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800',
+      videoUrl: sv.masterPlaylistUrl?.startsWith('http')
+        ? sv.masterPlaylistUrl
+        : `${API_BASE}${sv.masterPlaylistUrl}`,
+      category: sv.tags && sv.tags[0] ? sv.tags[0] : 'Music',
+      description: sv.description || '',
+      likesCount: sv.likesCount || 0,
+      commentsCount: 0,
+      verified: true
+    };
+    setVideos((prev) => [newVideo, ...prev]);
+    showToast(`Video "${newVideo.title}" published straight to Cloudflare R2!`);
+  };
+
   // Filter videos
-  const filteredVideos = videoDatabase.filter((v) => {
+  const filteredVideos = videos.filter((v) => {
     const matchesCategory = selectedCategory === 'All' || v.category === selectedCategory;
     const matchesSearch =
       searchQuery === '' ||
@@ -1724,7 +1794,7 @@ export default function YouTubePlatform() {
               {!isCinemaMode && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   <h3 style={{ margin: '0 0 8px 0', fontSize: '16px', fontWeight: 700, color: '#fff' }}>Up Next</h3>
-                  {videoDatabase
+                  {videos
                     .filter((v) => v.id !== activeVideo.id)
                     .map((item) => (
                       <div
@@ -2000,7 +2070,7 @@ export default function YouTubePlatform() {
               </h2>
               {(() => {
                 const list = currentView === 'watchLater' ? watchLaterList : likedList;
-                const matched = videoDatabase.filter(v => list.includes(v.id));
+                const matched = videos.filter(v => list.includes(v.id));
 
                 if (matched.length === 0) {
                   return (
@@ -2486,7 +2556,7 @@ export default function YouTubePlatform() {
         </div>
       )}
 
-      {/* ================= MODAL: VIDEO UPLOAD (R2 DISTRIBUTED) ================= */}
+      {/* ================= MODAL: REAL VIDEO UPLOAD (DIRECT TO CLOUDFLARE R2) ================= */}
       {showUploadModal && (
         <div
           style={{
@@ -2496,31 +2566,16 @@ export default function YouTubePlatform() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            zIndex: 1000
+            zIndex: 1000,
+            padding: '16px'
           }}
         >
-          <div
-            style={{
-              background: '#212121',
-              borderRadius: '16px',
-              padding: '28px',
-              width: '560px',
-              maxWidth: '90vw',
-              border: '1px solid #383838'
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#fff' }}>Upload Video to Cloudflare R2</h2>
-              <button
-                onClick={() => setShowUploadModal(false)}
-                style={{ background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer' }}
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <ChunkUploader />
-          </div>
+          <YouTubeUploader
+            onClose={() => setShowUploadModal(false)}
+            onUploadSuccess={handleUploadSuccess}
+            onWatchVideo={handleWatchVideo}
+            apiBase={API_BASE}
+          />
         </div>
       )}
     </div>

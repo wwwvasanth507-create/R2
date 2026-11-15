@@ -126,6 +126,20 @@ export class AdminService {
     };
 
     this.db.storageBuckets.set(id, newBucket);
+
+    if (this.db.pgPool) {
+      const pgBucketId = id.includes('-') && id.length === 36 ? id : 'c0000000-0000-0000-0000-' + String(Date.now()).slice(-12).padStart(12, '0');
+      const pgAccountId = dto.storageAccountId.includes('-') && dto.storageAccountId.length === 36
+        ? dto.storageAccountId
+        : 'b0000000-0000-0000-0000-000000000001';
+      this.db.pgPool.query(
+        `INSERT INTO storage_buckets (id, storage_account_id, bucket_name, region, logical_quota_bytes, used_storage_bytes, reserved_storage_bytes, priority, health_status, is_enabled, object_count)
+         VALUES ($1, $2, $3, $4, $5, 0, 0, $6, 'HEALTHY', true, 0)
+         ON CONFLICT (id) DO NOTHING;`,
+        [pgBucketId, pgAccountId, dto.bucketName, dto.region || 'auto', quota, newBucket.priority]
+      ).catch((err: any) => console.warn('[POSTGRES] addBucket sync notice:', err.message));
+    }
+
     return newBucket;
   }
 
@@ -147,6 +161,14 @@ export class AdminService {
     }
 
     bucket.updatedAt = new Date();
+
+    if (this.db.pgPool) {
+      this.db.pgPool.query(
+        `UPDATE storage_buckets SET logical_quota_bytes = $1, is_enabled = $2, priority = $3, updated_at = NOW() WHERE id = $4 OR bucket_name = $5;`,
+        [bucket.logicalQuotaBytes, bucket.isEnabled, bucket.priority, bucketId, bucket.bucketName]
+      ).catch((err: any) => console.warn('[POSTGRES] updateBucket sync notice:', err.message));
+    }
+
     return bucket;
   }
 
@@ -154,6 +176,14 @@ export class AdminService {
     const bucket = this.db.storageBuckets.get(bucketId);
     if (!bucket) throw new Error('Bucket not found.');
     this.db.storageBuckets.delete(bucketId);
+
+    if (this.db.pgPool) {
+      this.db.pgPool.query(
+        `DELETE FROM storage_buckets WHERE id = $1 OR bucket_name = $2;`,
+        [bucketId, bucket.bucketName]
+      ).catch((err: any) => console.warn('[POSTGRES] deleteBucket sync notice:', err.message));
+    }
+
     return { success: true, id: bucketId };
   }
 

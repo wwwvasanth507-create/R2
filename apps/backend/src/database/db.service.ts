@@ -35,8 +35,12 @@ import {
   INotification,
   DEFAULT_LOGICAL_QUOTA_BYTES
 } from '@platform/common';
+import { Pool } from 'pg';
+import { config } from '../config/configuration';
 
 export class DatabaseService {
+  public pgPool: Pool | null = null;
+
   // Data stores
   public users: Map<string, IUser & { passwordHash: string }> = new Map();
   public storageAccounts: Map<string, IStorageAccount & { secretAccessKey: string }> = new Map();
@@ -69,7 +73,129 @@ export class DatabaseService {
   public notifications: Map<string, INotification> = new Map();
 
   constructor() {
+    this.initPostgresPool();
     this.seedInitialData();
+  }
+
+  private initPostgresPool() {
+    try {
+      this.pgPool = new Pool({
+        connectionString: config.databaseUrl,
+        max: 10,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 3000
+      });
+      this.pgPool.on('error', (err) => {
+        console.warn('PostgreSQL pool background notice:', err.message);
+      });
+    } catch (err) {
+      console.warn('PostgreSQL pool initialization failed, using in-memory store:', err);
+    }
+  }
+
+  public async saveVideoToPostgres(video: IVideo, fileId?: string): Promise<void> {
+    if (!this.pgPool) return;
+    try {
+      const channelId = video.channelId && video.channelId.includes('-') && video.channelId.length === 36
+        ? video.channelId
+        : 'c0000000-0000-0000-0000-000000000001';
+
+      const userId = video.channel?.userId && video.channel.userId.includes('-') && video.channel.userId.length === 36
+        ? video.channel.userId
+        : 'a0000000-0000-0000-0000-000000000001';
+
+      const channelRes = await this.pgPool.query(
+        `INSERT INTO channels (id, user_id, handle, title, description, avatar_url, subscriber_count, video_count, total_views)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (user_id) DO UPDATE SET video_count = channels.video_count + 1
+         RETURNING id;`,
+        [
+          channelId,
+          userId,
+          video.channel?.handle || '@creator',
+          video.channel?.title || 'Creator Channel',
+          video.channel?.description || '',
+          video.channel?.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+          video.channel?.subscriberCount || 0,
+          1,
+          0
+        ]
+      );
+      const actualChannelId = channelRes.rows && channelRes.rows[0] ? channelRes.rows[0].id : channelId;
+
+      const videoDbId = video.id && video.id.includes('-') && video.id.length === 36
+        ? video.id
+        : 'v0000000-0000-0000-0000-' + String(Date.now()).slice(-12).padStart(12, '0');
+
+      await this.pgPool.query(
+        `INSERT INTO videos (
+           id, channel_id, file_id, title, description, thumbnail_url, master_playlist_url,
+           duration_seconds, views_count, likes_count, dislikes_count, comment_count,
+           is_short, visibility, tags, created_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           title = EXCLUDED.title,
+           description = EXCLUDED.description,
+           thumbnail_url = EXCLUDED.thumbnail_url,
+           master_playlist_url = EXCLUDED.master_playlist_url;`,
+        [
+          videoDbId,
+          actualChannelId,
+          fileId && fileId.length === 36 ? fileId : null,
+          video.title,
+          video.description,
+          video.thumbnailUrl,
+          video.masterPlaylistUrl,
+          video.durationSeconds,
+          video.viewsCount,
+          video.likesCount,
+          video.dislikesCount,
+          video.commentCount,
+          video.isShort,
+          video.visibility,
+          video.tags
+        ]
+      );
+      console.log(`[POSTGRES] Video "${video.title}" persisted to PostgreSQL 'videos' table.`);
+    } catch (err: any) {
+      console.warn('[POSTGRES] Video persistence notice:', err.message);
+    }
+  }
+
+  public async saveFileToPostgres(file: IFileManifest): Promise<void> {
+    if (!this.pgPool) return;
+    try {
+      const fileDbId = file.id && file.id.includes('-') && file.id.length === 36
+        ? file.id
+        : 'f0000000-0000-0000-0000-' + String(Date.now()).slice(-12).padStart(12, '0');
+
+      const ownerDbId = file.ownerId && file.ownerId.includes('-') && file.ownerId.length === 36
+        ? file.ownerId
+        : 'a0000000-0000-0000-0000-000000000001';
+
+      await this.pgPool.query(
+        `INSERT INTO files (id, owner_id, original_filename, mime_type, total_size_bytes, total_sha256_checksum, chunk_count, chunk_size_bytes, upload_status, is_distributed)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           upload_status = EXCLUDED.upload_status;`,
+        [
+          fileDbId,
+          ownerDbId,
+          file.originalFilename,
+          file.mimeType,
+          file.totalSizeBytes,
+          file.totalSha256Checksum || '',
+          file.chunkCount,
+          file.chunkSizeBytes,
+          file.uploadStatus,
+          file.isDistributed
+        ]
+      );
+      console.log(`[POSTGRES] File "${file.originalFilename}" (${file.totalSizeBytes} bytes) persisted to PostgreSQL 'files' table.`);
+    } catch (err: any) {
+      console.warn('[POSTGRES] File persistence notice:', err.message);
+    }
   }
 
   private seedInitialData() {
@@ -105,7 +231,7 @@ export class DatabaseService {
     };
     this.users.set(creatorUser.id, creatorUser);
 
-    // 2. Initial Multi-Account Storage Accounts & Buckets with 8 GB logical quotas
+    // 2. Initial Multi-Account Storage Accounts & strictly 1 R2 bucket per account (8 GiB logical quota)
     const acc1: IStorageAccount & { secretAccessKey: string } = {
       id: 'acc-cloudflare-alpha',
       displayName: 'Cloudflare Account Alpha (West)',
@@ -138,8 +264,42 @@ export class DatabaseService {
     };
     this.storageAccounts.set(acc2.id, acc2);
 
-    // Storage Buckets initially empty - managed via Admin Dashboard
-    // Users can connect Cloudflare R2 accounts and allocate production buckets freely.
+    // Initial 1 R2 bucket of 8 GiB logical quota per Cloudflare account
+    const bkt1: IStorageBucket = {
+      id: 'c0000000-0000-0000-0000-000000000001',
+      bucketName: 'wavemusic-r2-media-1',
+      storageAccountId: acc1.id,
+      region: 'auto',
+      logicalQuotaBytes: 8589934592, // 8 GiB
+      usedStorageBytes: 0,
+      reservedStorageBytes: 0,
+      availableStorageBytes: 8589934592,
+      priority: 1,
+      healthStatus: BucketHealthStatus.HEALTHY,
+      isEnabled: true,
+      objectCount: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.storageBuckets.set(bkt1.id, bkt1);
+
+    const bkt2: IStorageBucket = {
+      id: 'c0000000-0000-0000-0000-000000000002',
+      bucketName: 'wavemusic-r2-media-2',
+      storageAccountId: acc2.id,
+      region: 'auto',
+      logicalQuotaBytes: 8589934592, // 8 GiB
+      usedStorageBytes: 0,
+      reservedStorageBytes: 0,
+      availableStorageBytes: 8589934592,
+      priority: 2,
+      healthStatus: BucketHealthStatus.HEALTHY,
+      isEnabled: true,
+      objectCount: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    this.storageBuckets.set(bkt2.id, bkt2);
 
     // 3. Seed Netflix Content (Genres, Movies, Series, Episodes)
     const sciFiGenre: IGenre = { id: 'g-scifi', name: 'Sci-Fi & Cyberpunk', slug: 'sci-fi' };

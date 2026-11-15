@@ -76,11 +76,21 @@ export class R2StorageProvider implements IStorageProvider {
     contentType: string,
     metadata?: Record<string, string>
   ): Promise<{ etag?: string }> {
+    let contentLength: number | undefined;
+    if (metadata && metadata.contentLength) {
+      contentLength = Number(metadata.contentLength);
+    } else if (Buffer.isBuffer(body)) {
+      contentLength = body.length;
+    } else if (typeof body === 'string') {
+      contentLength = Buffer.byteLength(body);
+    }
+
     const command = new PutObjectCommand({
       Bucket: bucketName,
       Key: objectKey,
       Body: body as any,
       ContentType: contentType,
+      ContentLength: contentLength,
       Metadata: metadata
     });
 

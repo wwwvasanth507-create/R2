@@ -64,11 +64,12 @@ export class StorageManagerService {
       return local;
     }
 
-    // Check if real R2 credentials exist
+    // Check if real R2 credentials exist (placeholder seed keys start with cf_key_ or mock_)
     if (
       account.accessKeyId &&
       account.secretAccessKey &&
-      !account.accessKeyId.startsWith('mock_')
+      !account.accessKeyId.startsWith('mock_') &&
+      !account.accessKeyId.startsWith('cf_key_')
     ) {
       try {
         const r2Provider = new R2StorageProvider({

@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import {
   IVideo,
   IChannel,
@@ -7,6 +8,18 @@ import {
 } from '@platform/common';
 import { DatabaseService } from '../database/db.service';
 
+export interface CreateVideoInput {
+  title: string;
+  description?: string;
+  thumbnailUrl?: string;
+  masterPlaylistUrl: string;
+  durationSeconds?: number;
+  visibility?: VideoVisibility;
+  isShort?: boolean;
+  tags?: string[];
+  fileId?: string;
+}
+
 export class YouTubeService {
   constructor(private readonly db: DatabaseService) {}
 
@@ -15,24 +28,77 @@ export class YouTubeService {
       (v) => v.visibility === VideoVisibility.PUBLIC && !v.isShort
     );
 
-    if (tag) {
-      list = list.filter((v) => v.tags.includes(tag));
+    if (tag && tag !== 'All') {
+      list = list.filter((v) => v.tags && v.tags.some((t) => t.toLowerCase() === tag.toLowerCase()));
     }
 
     if (search) {
       const q = search.toLowerCase();
       list = list.filter(
-        (v) => v.title.toLowerCase().includes(q) || v.description.toLowerCase().includes(q)
+        (v) => v.title.toLowerCase().includes(q) || (v.description && v.description.toLowerCase().includes(q))
       );
     }
 
+    list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return list;
   }
 
   public getShorts(): IVideo[] {
-    return Array.from(this.db.videos.values()).filter(
+    const list = Array.from(this.db.videos.values()).filter(
       (v) => v.visibility === VideoVisibility.PUBLIC && v.isShort
     );
+    list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return list;
+  }
+
+  public async createVideo(userId: string, data: CreateVideoInput): Promise<IVideo> {
+    const user = this.db.users.get(userId);
+    let channel = Array.from(this.db.channels.values()).find((c) => c.userId === userId);
+
+    if (!channel) {
+      const channelId = crypto.randomUUID();
+      channel = {
+        id: channelId,
+        userId: user ? user.id : userId,
+        handle: user ? `@${user.username.replace(/[^a-zA-Z0-9_]/g, '_')}` : `@creator_${Date.now().toString().slice(-4)}`,
+        title: user ? user.displayName || user.username : 'Creator Channel',
+        description: 'Creator channel on WaveMusic Media Platform',
+        avatarUrl: user?.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+        subscriberCount: 0,
+        videoCount: 0,
+        totalViews: 0,
+        createdAt: new Date()
+      };
+      this.db.channels.set(channel.id, channel);
+    }
+
+    const videoId = crypto.randomUUID();
+    const video: IVideo = {
+      id: videoId,
+      channelId: channel.id,
+      channel,
+      title: data.title,
+      description: data.description || '',
+      thumbnailUrl: data.thumbnailUrl || 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800',
+      masterPlaylistUrl: data.masterPlaylistUrl,
+      durationSeconds: data.durationSeconds || 120,
+      viewsCount: 0,
+      likesCount: 0,
+      dislikesCount: 0,
+      commentCount: 0,
+      visibility: data.visibility || VideoVisibility.PUBLIC,
+      isShort: Boolean(data.isShort),
+      tags: data.tags && data.tags.length > 0 ? data.tags : ['WaveMusic', 'Video'],
+      createdAt: new Date()
+    };
+
+    channel.videoCount += 1;
+    this.db.videos.set(videoId, video);
+
+    // Persist to PostgreSQL if connected
+    await this.db.saveVideoToPostgres(video, data.fileId);
+
+    return video;
   }
 
   public getVideoById(id: string): (IVideo & { comments: IVideoComment[] }) | undefined {

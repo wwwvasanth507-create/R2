@@ -1,5 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
+import { PassThrough } from 'stream';
 import { DatabaseService } from './database/db.service';
 import { StorageManagerService } from './services/storage-manager.service';
 import { UploadService } from './services/upload.service';
@@ -10,7 +12,17 @@ import { YouTubeService } from './services/youtube.service';
 import { InstagramService } from './services/instagram.service';
 import { AdminService } from './services/admin.service';
 import { config } from './config/configuration';
-import { UserRole } from '@platform/common';
+import {
+  UserRole,
+  VideoVisibility,
+  FileUploadStatus,
+  ChunkUploadStatus,
+  VideoProcessingStatus,
+  IFileManifest,
+  IStorageBucket,
+  BucketHealthStatus,
+  DEFAULT_LOGICAL_QUOTA_BYTES
+} from '@platform/common';
 
 const app = express();
 
@@ -306,6 +318,304 @@ app.post('/api/netflix/watch-history', (req: Request, res: Response) => {
     totalDurationSeconds
   );
   res.json(result);
+});
+
+// --- Real Direct-to-R2 Video Upload Endpoint ---
+app.post('/api/videos/upload', async (req: Request, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const userId = authUser ? authUser.sub : 'user-admin-1';
+
+    const getHeaderOrQuery = (headerKey: string, queryKey: string): string => {
+      const h = req.headers[headerKey] as string | undefined;
+      const q = req.query[queryKey] as string | undefined;
+      const raw = h || q || '';
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
+    };
+
+    const title = getHeaderOrQuery('x-title', 'title') || 'Uploaded Video';
+    const description = getHeaderOrQuery('x-description', 'description') || '';
+    const category = getHeaderOrQuery('x-category', 'category') || 'All';
+    const tagsStr = getHeaderOrQuery('x-tags', 'tags') || '';
+    const rawFilename = getHeaderOrQuery('x-filename', 'filename') || 'video.mp4';
+    const sanitizedFilename = rawFilename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const isShort = req.headers['x-is-short'] === 'true' || req.query.isShort === 'true';
+    const visibility = (req.headers['x-visibility'] as VideoVisibility) || (req.query.visibility as VideoVisibility) || VideoVisibility.PUBLIC;
+    const durationSeconds = Number(req.headers['x-duration'] || req.query.duration || 180);
+    let thumbnailUrl = getHeaderOrQuery('x-thumbnail-url', 'thumbnailUrl');
+
+    const mimeType = (req.headers['content-type'] as string) || 'video/mp4';
+    const contentLength = Number(req.headers['content-length'] || 0);
+
+    // Ensure active bucket with strictly 8 GiB logical quota
+    let eligibleBuckets = storageManager.getEligibleBuckets();
+    if (eligibleBuckets.length === 0) {
+      const defaultBucket: IStorageBucket = {
+        id: 'c0000000-0000-0000-0000-000000000001',
+        bucketName: 'wavemusic-r2-media-1',
+        storageAccountId: 'acc-cloudflare-alpha',
+        region: 'auto',
+        logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
+        usedStorageBytes: 0,
+        reservedStorageBytes: 0,
+        availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
+        priority: 1,
+        healthStatus: BucketHealthStatus.HEALTHY,
+        isEnabled: true,
+        objectCount: 0,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+      db.storageBuckets.set(defaultBucket.id, defaultBucket);
+      eligibleBuckets = [defaultBucket];
+    }
+
+    // Select target bucket with available quota
+    let targetBucket = eligibleBuckets.find((b) => {
+      const avail = b.logicalQuotaBytes - (b.usedStorageBytes + b.reservedStorageBytes);
+      return contentLength <= 0 || avail >= contentLength;
+    });
+
+    if (!targetBucket) {
+      targetBucket = eligibleBuckets[0];
+    }
+
+    // Quota validation
+    const availableQuota = targetBucket.logicalQuotaBytes - (targetBucket.usedStorageBytes + targetBucket.reservedStorageBytes);
+    if (contentLength > 0 && contentLength > availableQuota) {
+      return res.status(400).json({
+        error: `Storage bucket quota (8 GiB) exceeded for bucket "${targetBucket.bucketName}". Available: ${(availableQuota / (1024 * 1024)).toFixed(1)} MiB, upload size: ${(contentLength / (1024 * 1024)).toFixed(1)} MiB.`
+      });
+    }
+
+    const fileId = crypto.randomUUID();
+    const objectKey = `videos/${fileId}/${sanitizedFilename}`;
+    const provider = storageManager.getProvider(targetBucket.storageAccountId);
+
+    // Stream upload directly to bucket and calculate SHA-256 on the fly
+    const hash = crypto.createHash('sha256');
+    let totalBytesReceived = 0;
+    const pass = new PassThrough();
+
+    req.on('data', (chunk: Buffer) => {
+      hash.update(chunk);
+      totalBytesReceived += chunk.length;
+    });
+
+    req.pipe(pass);
+
+    await provider.putObject(
+      targetBucket.bucketName,
+      objectKey,
+      pass,
+      mimeType,
+      {
+        originalFilename: rawFilename,
+        title,
+        ownerId: userId,
+        uploadedAt: new Date().toISOString()
+      }
+    );
+
+    const checksum = hash.digest('hex');
+    const finalSize = totalBytesReceived > 0 ? totalBytesReceived : contentLength;
+
+    // Update bucket quota usage
+    targetBucket.usedStorageBytes += finalSize;
+    targetBucket.objectCount = (targetBucket.objectCount || 0) + 1;
+    targetBucket.availableStorageBytes = Math.max(0, targetBucket.logicalQuotaBytes - (targetBucket.usedStorageBytes + targetBucket.reservedStorageBytes));
+    await storageManager.allocationEngine.evaluateBucketThresholds(targetBucket);
+
+    // Handle thumbnail if sent as base64 data URL
+    if (thumbnailUrl && thumbnailUrl.startsWith('data:image/')) {
+      try {
+        const matches = thumbnailUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          const thumbMime = matches[1];
+          const thumbBuffer = Buffer.from(matches[2], 'base64');
+          const thumbKey = `thumbnails/${fileId}.jpg`;
+          await provider.putObject(targetBucket.bucketName, thumbKey, thumbBuffer, thumbMime);
+
+          const thumbFileId = `thumb-${fileId}`;
+          const thumbChunk = {
+            id: `chk-${thumbFileId}-0`,
+            fileId: thumbFileId,
+            chunkIndex: 0,
+            byteStart: 0,
+            byteEnd: thumbBuffer.length - 1,
+            chunkSizeBytes: thumbBuffer.length,
+            bucketId: targetBucket.id,
+            bucketName: targetBucket.bucketName,
+            storageAccountId: targetBucket.storageAccountId,
+            objectKey: thumbKey,
+            status: ChunkUploadStatus.VERIFIED,
+            verifiedAt: new Date()
+          };
+          const thumbManifest: IFileManifest = {
+            id: thumbFileId,
+            ownerId: userId,
+            originalFilename: `${fileId}-thumb.jpg`,
+            mimeType: thumbMime,
+            totalSizeBytes: thumbBuffer.length,
+            chunkCount: 1,
+            chunkSizeBytes: thumbBuffer.length,
+            uploadStatus: FileUploadStatus.READY,
+            processingStatus: VideoProcessingStatus.COMPLETED,
+            isDistributed: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            chunks: [thumbChunk]
+          };
+          db.files.set(thumbFileId, thumbManifest);
+          db.fileChunks.set(thumbChunk.id, thumbChunk);
+          thumbnailUrl = `/api/files/${thumbFileId}/download`;
+        }
+      } catch (err: any) {
+        console.warn('Thumbnail processing notice:', err.message);
+      }
+    }
+
+    if (!thumbnailUrl) {
+      thumbnailUrl = 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800';
+    }
+
+    // Persist file manifest
+    const fileChunk = {
+      id: `chk-${fileId}-0`,
+      fileId,
+      chunkIndex: 0,
+      byteStart: 0,
+      byteEnd: Math.max(0, finalSize - 1),
+      chunkSizeBytes: finalSize,
+      bucketId: targetBucket.id,
+      bucketName: targetBucket.bucketName,
+      storageAccountId: targetBucket.storageAccountId,
+      objectKey,
+      status: ChunkUploadStatus.VERIFIED,
+      verifiedAt: new Date()
+    };
+
+    const fileManifest: IFileManifest = {
+      id: fileId,
+      ownerId: userId,
+      originalFilename: rawFilename,
+      mimeType,
+      totalSizeBytes: finalSize,
+      totalSha256Checksum: checksum,
+      chunkCount: 1,
+      chunkSizeBytes: finalSize,
+      uploadStatus: FileUploadStatus.READY,
+      processingStatus: VideoProcessingStatus.COMPLETED,
+      isDistributed: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      chunks: [fileChunk]
+    };
+
+    db.files.set(fileId, fileManifest);
+    db.fileChunks.set(fileChunk.id, fileChunk);
+    await db.saveFileToPostgres(fileManifest);
+
+    // Create Video in YouTube Service and DB
+    const streamUrl = `/api/files/${fileId}/download`;
+    const parsedTags = tagsStr
+      ? tagsStr.split(',').map((t) => t.trim()).filter(Boolean)
+      : [category, 'Video'];
+
+    const video = await youtubeService.createVideo(userId, {
+      title,
+      description,
+      thumbnailUrl,
+      masterPlaylistUrl: streamUrl,
+      durationSeconds,
+      visibility,
+      isShort,
+      tags: parsedTags,
+      fileId
+    });
+
+    console.log(`[VIDEO UPLOAD] Successfully uploaded "${title}" (${finalSize} bytes, format: ${mimeType}) straight to bucket "${targetBucket.bucketName}".`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Video uploaded and published successfully straight to R2 storage bucket',
+      video,
+      file: fileManifest,
+      streamUrl,
+      bucket: {
+        id: targetBucket.id,
+        name: targetBucket.bucketName,
+        usedStorageBytes: targetBucket.usedStorageBytes,
+        logicalQuotaBytes: targetBucket.logicalQuotaBytes
+      }
+    });
+  } catch (err: any) {
+    console.error('[VIDEO UPLOAD ERROR]', err);
+    res.status(500).json({ error: err.message || 'Video upload failed' });
+  }
+});
+
+// --- Upload Custom Thumbnail Endpoint ---
+app.post('/api/videos/upload-thumbnail', async (req: Request, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const userId = authUser ? authUser.sub : 'user-admin-1';
+    const eligibleBuckets = storageManager.getEligibleBuckets();
+    const targetBucket = eligibleBuckets[0] || db.storageBuckets.values().next().value;
+    if (!targetBucket) {
+      return res.status(400).json({ error: 'No active storage bucket' });
+    }
+    const thumbId = crypto.randomUUID();
+    const objectKey = `thumbnails/${thumbId}.jpg`;
+    const provider = storageManager.getProvider(targetBucket.storageAccountId);
+
+    const contentType = (req.headers['content-type'] as string) || 'image/jpeg';
+    const pass = new PassThrough();
+    req.pipe(pass);
+
+    await provider.putObject(targetBucket.bucketName, objectKey, pass, contentType);
+
+    const fileId = `thumb-${thumbId}`;
+    const fileManifest: IFileManifest = {
+      id: fileId,
+      ownerId: userId,
+      originalFilename: `thumb-${thumbId}.jpg`,
+      mimeType: contentType,
+      totalSizeBytes: Number(req.headers['content-length'] || 0),
+      chunkCount: 1,
+      chunkSizeBytes: Number(req.headers['content-length'] || 0),
+      uploadStatus: FileUploadStatus.READY,
+      processingStatus: VideoProcessingStatus.COMPLETED,
+      isDistributed: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      chunks: [{
+        id: `chk-${fileId}-0`,
+        fileId,
+        chunkIndex: 0,
+        byteStart: 0,
+        byteEnd: 0,
+        chunkSizeBytes: Number(req.headers['content-length'] || 0),
+        bucketId: targetBucket.id,
+        bucketName: targetBucket.bucketName,
+        storageAccountId: targetBucket.storageAccountId,
+        objectKey,
+        status: ChunkUploadStatus.VERIFIED,
+        verifiedAt: new Date()
+      }]
+    };
+    db.files.set(fileId, fileManifest);
+    res.status(201).json({
+      success: true,
+      thumbnailUrl: `/api/files/${fileId}/download`
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- YouTube Endpoints ---
