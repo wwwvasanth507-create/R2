@@ -1924,6 +1924,31 @@ export default function VDPlayerApp() {
                     )}
                   </button>
 
+                  {/* Android App Direct Download */}
+                  <a
+                    href="/vd-player.apk"
+                    download="vd-player.apk"
+                    style={{
+                      background: 'rgba(34, 197, 94, 0.25)',
+                      border: '1px solid rgba(34, 197, 94, 0.5)',
+                      backdropFilter: 'blur(10px)',
+                      color: '#4ade80',
+                      padding: '12px 20px',
+                      borderRadius: '8px',
+                      fontSize: '14px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      textDecoration: 'none'
+                    }}
+                    title="Download Official VD Player Android APK"
+                  >
+                    <Download size={18} />
+                    <span>Download Android App</span>
+                  </a>
+
                   {/* Admin controls right on hero */}
                   {isVasanthAdmin && (
                     <button
