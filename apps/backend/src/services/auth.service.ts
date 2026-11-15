@@ -94,6 +94,7 @@ export class AuthService {
         uEmail === query ||
         uName === query ||
         (query === 'admin' && u.role === UserRole.SUPER_ADMIN) ||
+        (query === 'vasanth013' && (uName === 'vasanth013' || uName.includes('vasanth') || uEmail.includes('vasanth'))) ||
         (query === 'vasanth' && (uName.includes('vasanth') || uEmail.includes('vasanth'))) ||
         (query === 'vasanth v' && (uName.includes('vasanth') || uEmail.includes('vasanth')))
       ) {

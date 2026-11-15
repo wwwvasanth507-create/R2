@@ -146,6 +146,28 @@ export class DatabaseService {
       }
       console.log(`[POSTGRES] Synchronized ${accRes.rows.length} storage accounts and ${bktRes.rows.length} buckets from database.`);
 
+      // Synchronize users from PostgreSQL
+      const userRes = await this.pgPool.query('SELECT * FROM users');
+      if (userRes.rows.length > 0) {
+        for (const uRow of userRes.rows) {
+          const userObj: IUser & { passwordHash: string } = {
+            id: uRow.id,
+            email: uRow.email,
+            username: uRow.username,
+            displayName: uRow.display_name || uRow.username,
+            role: (uRow.role as UserRole) || UserRole.USER,
+            status: (uRow.status as UserStatus) || UserStatus.ACTIVE,
+            passwordHash: uRow.password_hash,
+            avatarUrl: uRow.avatar_url || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+            isVerified: Boolean(uRow.is_verified),
+            createdAt: uRow.created_at || new Date(),
+            updatedAt: uRow.updated_at || new Date()
+          };
+          this.users.set(userObj.id, userObj);
+        }
+        console.log(`[POSTGRES] Synchronized ${userRes.rows.length} users from database.`);
+      }
+
       // Synchronize real videos from PostgreSQL
       const vidRes = await this.pgPool.query('SELECT * FROM videos ORDER BY created_at DESC');
       if (vidRes.rows.length > 0) {
@@ -437,8 +459,8 @@ export class DatabaseService {
     // 1. Initial Users (Super Admin, Creator, Normal User)
     const adminUser: IUser & { passwordHash: string } = {
       id: 'user-admin-1',
-      email: 'vasanth@wavemusic.dpdns.org',
-      username: 'VASANTH V',
+      email: 'vasanth013@wavemusic.dpdns.org',
+      username: 'vasanth013',
       displayName: 'VASANTH V',
       role: UserRole.SUPER_ADMIN,
       status: UserStatus.ACTIVE,

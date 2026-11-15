@@ -170,8 +170,8 @@ export class RangeDownloadGateway {
       throw new Error('Requested byte range could not be mapped to any available chunk.');
     }
 
-    // Bounded streaming pipeline: Pipe slices consecutively into a PassThrough stream
-    const outputStream = new PassThrough();
+    // High-performance bounded streaming pipeline with 1MB highWaterMark buffer for instant playback
+    const outputStream = new PassThrough({ highWaterMark: 1024 * 1024 });
 
     // Stream sequentially in background without holding entire file in RAM
     (async () => {
@@ -200,7 +200,7 @@ export class RangeDownloadGateway {
       'Content-Type': manifest.mimeType || 'application/octet-stream',
       'Content-Length': contentLength,
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'public, max-age=86400, stale-while-revalidate=3600',
+      'Cache-Control': 'public, max-age=31536000, immutable',
       ETag: manifest.totalSha256Checksum ? `"${manifest.totalSha256Checksum}"` : `"${manifest.id}"`
     };
 

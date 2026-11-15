@@ -186,4 +186,76 @@ export class YouTubeService {
       return { isSubscribed: true, subscriberCount: channel.subscriberCount };
     }
   }
+
+  public async updateVideo(
+    videoId: string,
+    data: {
+      title?: string;
+      description?: string;
+      thumbnailUrl?: string;
+      category?: string;
+      tags?: string[];
+    }
+  ): Promise<IVideo> {
+    const video = this.db.videos.get(videoId);
+    if (!video) throw new Error('Video not found.');
+
+    if (data.title !== undefined) video.title = data.title;
+    if (data.description !== undefined) video.description = data.description;
+    if (data.thumbnailUrl !== undefined) video.thumbnailUrl = data.thumbnailUrl;
+    if (data.tags !== undefined) {
+      video.tags = data.tags;
+    } else if (data.category !== undefined) {
+      video.tags = [data.category, ...(video.tags?.filter((t) => t !== data.category) || [])];
+    }
+
+    if (this.db.pgPool) {
+      try {
+        await this.db.pgPool.query(
+          `UPDATE videos 
+           SET title = $1, description = $2, thumbnail_url = $3, tags = $4 
+           WHERE id = $5`,
+          [video.title, video.description, video.thumbnailUrl, video.tags, videoId]
+        );
+      } catch (err: any) {
+        console.warn('[POSTGRES] Failed to update video in DB:', err.message);
+      }
+    }
+
+    return video;
+  }
+
+  public async deleteVideo(videoId: string): Promise<{ success: boolean; message: string }> {
+    const video = this.db.videos.get(videoId);
+    if (!video) throw new Error('Video not found.');
+
+    if (this.db.pgPool) {
+      try {
+        // Find fileId if any
+        const fRes = await this.db.pgPool.query('SELECT file_id FROM videos WHERE id = $1', [videoId]);
+        const fileId = fRes.rows[0]?.file_id;
+
+        // Delete from videos table
+        await this.db.pgPool.query('DELETE FROM videos WHERE id = $1', [videoId]);
+
+        if (fileId) {
+          // Find chunks
+          const chunkRes = await this.db.pgPool.query('SELECT * FROM file_chunks WHERE file_id = $1', [fileId]);
+          // Clean up PostgreSQL chunks and files
+          await this.db.pgPool.query('DELETE FROM file_chunks WHERE file_id = $1', [fileId]);
+          await this.db.pgPool.query('DELETE FROM files WHERE id = $1', [fileId]);
+
+          this.db.files.delete(fileId);
+          for (const c of chunkRes.rows) {
+            this.db.fileChunks.delete(c.id);
+          }
+        }
+      } catch (err: any) {
+        console.warn('[POSTGRES] Error deleting video from DB:', err.message);
+      }
+    }
+
+    this.db.videos.delete(videoId);
+    return { success: true, message: `Video "${video.title}" permanently deleted.` };
+  }
 }

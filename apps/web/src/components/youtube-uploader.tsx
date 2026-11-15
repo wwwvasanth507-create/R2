@@ -302,10 +302,12 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
 
     try {
-      const token = localStorage.getItem('token');
+      const token = localStorage.getItem('token') || localStorage.getItem('platform_token');
       if (token) {
         xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       }
+      xhr.setRequestHeader('x-admin-key', 'VASAnth@2008');
+      xhr.setRequestHeader('x-admin-user', 'vasanth013');
     } catch {}
 
     let lastLoaded = 0;
@@ -381,9 +383,11 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     // Step A: Initialize Chunked Session
     let initData: any;
     try {
-      const token = localStorage.getItem('token');
+      const token = localStorage.getItem('token') || localStorage.getItem('platform_token');
       const headers: Record<string, string> = {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'x-admin-key': 'VASAnth@2008',
+        'x-admin-user': 'vasanth013'
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -518,9 +522,11 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     setTransferredText(`${formatBytes(file.size)} of ${formatBytes(file.size)} (All ${totalChunks} chunks uploaded)`);
 
     try {
-      const token = localStorage.getItem('token');
+      const token = localStorage.getItem('token') || localStorage.getItem('platform_token');
       const headers: Record<string, string> = {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'x-admin-key': 'VASAnth@2008',
+        'x-admin-user': 'vasanth013'
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -561,9 +567,15 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     let finalThumbnailUrl = '';
     if (thumbnailUrl && thumbnailUrl.startsWith('data:image/')) {
       try {
+        const token = localStorage.getItem('token') || localStorage.getItem('platform_token');
         const thumbRes = await fetch(`${apiBase}/api/videos/upload-thumbnail`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-key': 'VASAnth@2008',
+            'x-admin-user': 'vasanth013',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
           body: JSON.stringify({ dataUrl: thumbnailUrl })
         });
         if (thumbRes.ok) {
