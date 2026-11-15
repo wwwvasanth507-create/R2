@@ -1,0 +1,18 @@
+{
+  "name": "VD Player - Movies & Streaming",
+  "short_name": "VD Player",
+  "description": "High-performance Cinema & Video Streaming Platform with 24K Ultra Visuals",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#08090d",
+  "theme_color": "#08090d",
+  "icons": [
+    {
+      "src": "/vd-logo.jpg",
+      "sizes": "192x192 512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

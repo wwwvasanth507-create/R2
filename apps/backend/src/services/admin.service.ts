@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import {
   IStorageAccount,
   StorageAccountStatus,
@@ -384,7 +385,169 @@ export class AdminService {
 
   // --- Users & Moderation ---
   public getUsers(): IUser[] {
-    return Array.from(this.db.users.values());
+    return Array.from(this.db.users.values()).map((u) => {
+      const { passwordHash, ...clean } = u;
+      return clean as IUser;
+    });
+  }
+
+  public async createUser(data: {
+    username: string;
+    email: string;
+    password: string;
+    displayName?: string;
+    role?: UserRole;
+  }): Promise<IUser> {
+    const email = data.email.trim().toLowerCase();
+    const username = data.username.trim();
+    for (const u of this.db.users.values()) {
+      if (u.email.toLowerCase() === email) {
+        throw new Error('Email is already registered.');
+      }
+      if (u.username.toLowerCase() === username.toLowerCase()) {
+        throw new Error('Username is already taken.');
+      }
+    }
+
+    const userId = crypto.randomUUID();
+    const role = data.role || UserRole.CREATOR;
+    const passwordHash = crypto.createHash('sha256').update(data.password + '_salt_agy').digest('hex');
+
+    const newUser: IUser & { passwordHash: string } = {
+      id: userId,
+      email,
+      username,
+      displayName: data.displayName?.trim() || username,
+      role,
+      status: UserStatus.ACTIVE,
+      passwordHash,
+      avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${username}`,
+      isVerified: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    this.db.users.set(newUser.id, newUser);
+
+    if (this.db.pgPool) {
+      try {
+        await this.db.pgPool.query(
+          `INSERT INTO users (id, email, username, password_hash, display_name, role, status, is_verified, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT (email) DO UPDATE SET
+             username = EXCLUDED.username,
+             password_hash = EXCLUDED.password_hash,
+             display_name = EXCLUDED.display_name,
+             role = EXCLUDED.role,
+             status = EXCLUDED.status,
+             updated_at = NOW()`,
+          [
+            newUser.id,
+            newUser.email,
+            newUser.username,
+            newUser.passwordHash,
+            newUser.displayName,
+            newUser.role,
+            newUser.status,
+            newUser.isVerified,
+            newUser.createdAt,
+            newUser.updatedAt
+          ]
+        );
+      } catch (pgErr: any) {
+        console.warn('[POSTGRES] user insert fallback:', pgErr.message);
+      }
+    }
+
+    const { passwordHash: _, ...clean } = newUser;
+    return clean as IUser;
+  }
+
+  public async updateUser(
+    userId: string,
+    data: {
+      username?: string;
+      email?: string;
+      password?: string;
+      displayName?: string;
+      role?: UserRole;
+      status?: UserStatus;
+    }
+  ): Promise<IUser> {
+    const user = this.db.users.get(userId);
+    if (!user) throw new Error('User not found.');
+
+    if (data.username && data.username.trim()) {
+      user.username = data.username.trim();
+    }
+    if (data.email && data.email.trim()) {
+      user.email = data.email.trim().toLowerCase();
+    }
+    if (data.displayName && data.displayName.trim()) {
+      user.displayName = data.displayName.trim();
+    }
+    if (data.role) {
+      user.role = data.role;
+    }
+    if (data.status) {
+      user.status = data.status;
+    }
+    if (data.password && data.password.trim().length >= 6) {
+      user.passwordHash = crypto.createHash('sha256').update(data.password.trim() + '_salt_agy').digest('hex');
+    }
+    user.updatedAt = new Date();
+    this.db.users.set(userId, user);
+
+    if (this.db.pgPool) {
+      try {
+        await this.db.pgPool.query(
+          `UPDATE users SET
+             username = $1,
+             email = $2,
+             display_name = $3,
+             role = $4,
+             status = $5,
+             password_hash = $6,
+             updated_at = NOW()
+           WHERE id = $7 OR username = $1 OR email = $2`,
+          [
+            user.username,
+            user.email,
+            user.displayName,
+            user.role,
+            user.status,
+            user.passwordHash,
+            userId
+          ]
+        );
+      } catch (pgErr: any) {
+        console.warn('[POSTGRES] user update fallback:', pgErr.message);
+      }
+    }
+
+    const { passwordHash: _, ...clean } = user;
+    return clean as IUser;
+  }
+
+  public async deleteUser(userId: string): Promise<boolean> {
+    const user = this.db.users.get(userId);
+    if (!user) throw new Error('User not found.');
+
+    this.db.users.delete(userId);
+
+    if (this.db.pgPool) {
+      try {
+        await this.db.pgPool.query(`DELETE FROM users WHERE id = $1 OR username = $2 OR email = $3`, [
+          userId,
+          user.username,
+          user.email
+        ]);
+      } catch (pgErr: any) {
+        console.warn('[POSTGRES] user delete fallback:', pgErr.message);
+      }
+    }
+
+    return true;
   }
 
   public updateUserRole(userId: string, role: UserRole): IUser {
@@ -392,7 +555,11 @@ export class AdminService {
     if (!user) throw new Error('User not found.');
     user.role = role;
     user.updatedAt = new Date();
-    return user;
+    if (this.db.pgPool) {
+      this.db.pgPool.query('UPDATE users SET role = $1, updated_at = NOW() WHERE id = $2', [role, userId]).catch(console.warn);
+    }
+    const { passwordHash: _, ...clean } = user;
+    return clean as IUser;
   }
 
   public updateUserStatus(userId: string, status: UserStatus): IUser {
@@ -400,6 +567,10 @@ export class AdminService {
     if (!user) throw new Error('User not found.');
     user.status = status;
     user.updatedAt = new Date();
-    return user;
+    if (this.db.pgPool) {
+      this.db.pgPool.query('UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2', [status, userId]).catch(console.warn);
+    }
+    const { passwordHash: _, ...clean } = user;
+    return clean as IUser;
   }
 }

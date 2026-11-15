@@ -8,4 +8,8 @@ scripts/dist/
 .DS_Store
 Thumbs.db
 backups/
+android/.gradle/
+android/app/build/
+android/.idea/
+android/local.properties
 

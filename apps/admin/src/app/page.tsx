@@ -20,7 +20,10 @@ import {
   Key,
   Eye,
   EyeOff,
-  ExternalLink
+  ExternalLink,
+  Edit2,
+  UserPlus,
+  KeyRound
 } from 'lucide-react';
 import { DEFAULT_LOGICAL_QUOTA_BYTES } from '@platform/common';
 
@@ -62,13 +65,50 @@ interface AlertItem {
   resolved: boolean;
 }
 
+interface UserAccountItem {
+  id: string;
+  username: string;
+  email: string;
+  displayName?: string;
+  role: 'SUPER_ADMIN' | 'ADMIN' | 'CREATOR' | 'USER' | 'MODERATOR';
+  status: 'ACTIVE' | 'SUSPENDED' | 'PENDING_VERIFICATION';
+  createdAt?: string;
+}
+
 export default function AdminDashboard() {
   // Auth State
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [adminUsername, setAdminUsername] = useState<string>('vasanth013');
-  const [adminPassword, setAdminPassword] = useState<string>('VASAnth@2008');
+  const [adminUsername, setAdminUsername] = useState<string>('');
+  const [adminPassword, setAdminPassword] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
   const [authToken, setAuthToken] = useState<string>('');
+
+  // User Management State
+  const [userList, setUserList] = useState<UserAccountItem[]>([]);
+  const [showAddUserModal, setShowAddUserModal] = useState<boolean>(false);
+  const [showEditUserModal, setShowEditUserModal] = useState<boolean>(false);
+  const [editingUser, setEditingUser] = useState<UserAccountItem | null>(null);
+  const [editUsername, setEditUsername] = useState<string>('');
+  const [editEmail, setEditEmail] = useState<string>('');
+  const [editDisplayName, setEditDisplayName] = useState<string>('');
+  const [editRole, setEditRole] = useState<string>('CREATOR');
+  const [editPassword, setEditPassword] = useState<string>('');
+  const [editStatus, setEditStatus] = useState<string>('ACTIVE');
+
+  // Add User Form State
+  const [newUsername, setNewUsername] = useState<string>('');
+  const [newEmail, setNewEmail] = useState<string>('');
+  const [newPassword, setNewPassword] = useState<string>('');
+  const [newDisplayName, setNewDisplayName] = useState<string>('');
+  const [newRole, setNewRole] = useState<string>('CREATOR');
+  const [userActionMsg, setUserActionMsg] = useState<{ text: string; error?: boolean } | null>(null);
+
+  // Change Admin Password State
+  const [showChangeAdminPasswordModal, setShowChangeAdminPasswordModal] = useState<boolean>(false);
+  const [currPassword, setCurrPassword] = useState<string>('');
+  const [newAdminPassword, setNewAdminPassword] = useState<string>('');
+  const [confirmAdminPassword, setConfirmAdminPassword] = useState<string>('');
+  const [adminPasswordStatus, setAdminPasswordStatus] = useState<{ text: string; error?: boolean } | null>(null);
 
   // Navigation
   const [activeTab, setActiveTab] = useState<'overview' | 'accounts' | 'buckets' | 'alerts' | 'users'>('overview');
@@ -254,8 +294,166 @@ export default function AdminDashboard() {
           })));
         }
       }
+
+      // 4. Fetch Users & Uploaders
+      const uRes = await fetch(`${API_BASE}/api/admin/users`, {
+        headers: {
+          Authorization: `Bearer ${t}`,
+          'x-admin-key': adminPassword || 'VASAnth@2008',
+          'x-admin-user': adminUsername || 'VASANTH V'
+        }
+      });
+      if (uRes.ok) {
+        const uData = await uRes.json();
+        if (Array.isArray(uData)) {
+          setUserList(uData);
+        }
+      }
     } catch (err) {
       console.log('API sync notice:', err);
+    }
+  };
+
+  // --- User & Uploader Management Handlers ---
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setUserActionMsg(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+          'x-admin-key': adminPassword || 'VASAnth@2008',
+          'x-admin-user': adminUsername || 'VASANTH V'
+        },
+        body: JSON.stringify({
+          username: newUsername,
+          email: newEmail,
+          password: newPassword,
+          displayName: newDisplayName || newUsername,
+          role: newRole
+        })
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed to create user');
+      showToast(`Account created for ${newUsername}!`);
+      setShowAddUserModal(false);
+      setNewUsername('');
+      setNewEmail('');
+      setNewPassword('');
+      setNewDisplayName('');
+      fetchDashboardData();
+    } catch (err: any) {
+      setUserActionMsg({ text: err.message, error: true });
+    }
+  };
+
+  const handleOpenEditUser = (u: UserAccountItem) => {
+    setEditingUser(u);
+    setEditUsername(u.username);
+    setEditEmail(u.email);
+    setEditDisplayName(u.displayName || u.username);
+    setEditRole(u.role);
+    setEditStatus(u.status);
+    setEditPassword('');
+    setUserActionMsg(null);
+    setShowEditUserModal(true);
+  };
+
+  const handleUpdateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+    setUserActionMsg(null);
+    try {
+      const payload: any = {
+        username: editUsername,
+        email: editEmail,
+        displayName: editDisplayName,
+        role: editRole,
+        status: editStatus
+      };
+      if (editPassword && editPassword.length >= 6) {
+        payload.password = editPassword;
+      }
+      const res = await fetch(`${API_BASE}/api/admin/users/${editingUser.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+          'x-admin-key': adminPassword || 'VASAnth@2008',
+          'x-admin-user': adminUsername || 'VASANTH V'
+        },
+        body: JSON.stringify(payload)
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed to update user');
+      showToast(`Account updated for ${editUsername}!`);
+      setShowEditUserModal(false);
+      setEditingUser(null);
+      setEditPassword('');
+      fetchDashboardData();
+    } catch (err: any) {
+      setUserActionMsg({ text: err.message, error: true });
+    }
+  };
+
+  const handleDeleteUser = async (u: UserAccountItem) => {
+    if (!confirm(`Are you sure you want to delete uploader/admin account "${u.username}"?`)) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/users/${u.id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          'x-admin-key': adminPassword || 'VASAnth@2008',
+          'x-admin-user': adminUsername || 'VASANTH V'
+        }
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed to delete user');
+      showToast(`Account "${u.username}" deleted successfully.`);
+      fetchDashboardData();
+    } catch (err: any) {
+      showToast(`Error: ${err.message}`);
+    }
+  };
+
+  const handleChangeAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdminPasswordStatus(null);
+    if (newAdminPassword !== confirmAdminPassword) {
+      setAdminPasswordStatus({ text: 'New passwords do not match!', error: true });
+      return;
+    }
+    if (newAdminPassword.length < 6) {
+      setAdminPasswordStatus({ text: 'Password must be at least 6 characters long.', error: true });
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/change-password`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+          'x-admin-key': adminPassword || 'VASAnth@2008',
+          'x-admin-user': adminUsername || 'VASANTH V'
+        },
+        body: JSON.stringify({
+          username: adminUsername || 'VASANTH V',
+          oldPassword: currPassword,
+          newPassword: newAdminPassword
+        })
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || 'Failed to update password');
+      setAdminPassword(newAdminPassword);
+      setCurrPassword('');
+      setNewAdminPassword('');
+      setConfirmAdminPassword('');
+      setShowChangeAdminPasswordModal(false);
+      showToast('Admin password changed successfully!');
+    } catch (err: any) {
+      setAdminPasswordStatus({ text: err.message, error: true });
     }
   };
 
@@ -468,7 +666,7 @@ export default function AdminDashboard() {
                   type="text"
                   value={adminUsername}
                   onChange={(e) => setAdminUsername(e.target.value)}
-                  placeholder="VASANTH V"
+                  placeholder="Enter admin username or email"
                   required
                   style={{
                     width: '100%',
@@ -495,7 +693,7 @@ export default function AdminDashboard() {
                   type="password"
                   value={adminPassword}
                   onChange={(e) => setAdminPassword(e.target.value)}
-                  placeholder="••••••••••••"
+                  placeholder="Enter admin password"
                   required
                   style={{
                     width: '100%',
@@ -536,22 +734,6 @@ export default function AdminDashboard() {
               <span>Sign In to Admin Console</span>
             </button>
           </form>
-
-          <div
-            style={{
-              marginTop: '24px',
-              padding: '12px',
-              background: '#0a0d14',
-              borderRadius: '8px',
-              border: '1px dashed #334155',
-              fontSize: '12px',
-              color: '#94a3b8'
-            }}
-          >
-            <div style={{ fontWeight: 600, color: '#e2e8f0', marginBottom: '4px' }}>Authorized Admin Account:</div>
-            <div>Username: <code style={{ color: '#f97316' }}>VASANTH V</code></div>
-            <div>Password: <code style={{ color: '#f97316' }}>VASAnth@2008</code></div>
-          </div>
         </div>
       </div>
     );
@@ -672,8 +854,34 @@ export default function AdminDashboard() {
             }}
           >
             <ShieldCheck size={16} color="#f97316" />
-            <span>Admin: VASANTH V</span>
+            <span>Admin: {adminUsername || 'Super Admin'}</span>
           </div>
+          <button
+            onClick={() => {
+              setCurrPassword('');
+              setNewAdminPassword('');
+              setConfirmAdminPassword('');
+              setAdminPasswordStatus(null);
+              setShowChangeAdminPasswordModal(true);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 12px',
+              background: 'rgba(249, 115, 22, 0.15)',
+              border: '1px solid rgba(249, 115, 22, 0.4)',
+              color: '#fb923c',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 700,
+              cursor: 'pointer'
+            }}
+            title="Change Admin Password"
+          >
+            <KeyRound size={14} />
+            <span>Change Password</span>
+          </button>
           <button
             onClick={handleLogout}
             style={{
@@ -1194,52 +1402,238 @@ export default function AdminDashboard() {
             </div>
           )}
 
-          {/* ================= USERS TAB ================= */}
+          {/* ================= USERS & UPLOADERS TAB ================= */}
           {activeTab === 'users' && (
             <div>
-              <div style={{ marginBottom: '24px' }}>
-                <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800, color: '#fff' }}>
-                  Users, RBAC & Moderation
-                </h2>
-                <p style={{ margin: 0, fontSize: '13px', color: '#94a3b8' }}>
-                  Manage administrators, creators, and user roles across the platform.
-                </p>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px', flexWrap: 'wrap', gap: '16px' }}>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800, color: '#fff' }}>
+                    Video Uploaders & Administrator Accounts
+                  </h2>
+                  <p style={{ margin: '4px 0 0 0', fontSize: '13px', color: '#94a3b8' }}>
+                    Manage authorized uploaders and administrators. Anyone with CREATOR or ADMIN role can upload, edit, and delete videos on VD Player.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button
+                    onClick={() => {
+                      setNewUsername('');
+                      setNewEmail('');
+                      setNewPassword('');
+                      setNewDisplayName('');
+                      setNewRole('CREATOR');
+                      setUserActionMsg(null);
+                      setShowAddUserModal(true);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 18px',
+                      background: 'linear-gradient(135deg, #f97316, #ea580c)',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      boxShadow: '0 4px 12px rgba(249, 115, 22, 0.3)'
+                    }}
+                  >
+                    <UserPlus size={16} />
+                    <span>+ Add New Uploader / Admin</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCurrPassword('');
+                      setNewAdminPassword('');
+                      setConfirmAdminPassword('');
+                      setAdminPasswordStatus(null);
+                      setShowChangeAdminPasswordModal(true);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      padding: '10px 18px',
+                      background: 'rgba(255,255,255,0.08)',
+                      border: '1px solid #334155',
+                      color: '#e2e8f0',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <KeyRound size={16} color="#f97316" />
+                    <span>Change Admin Password</span>
+                  </button>
+                </div>
               </div>
 
+              {/* Security & Access Info Banner */}
+              <div
+                style={{
+                  background: 'rgba(59, 130, 246, 0.1)',
+                  border: '1px solid rgba(59, 130, 246, 0.3)',
+                  borderRadius: '10px',
+                  padding: '14px 18px',
+                  marginBottom: '20px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '12px',
+                  fontSize: '13px',
+                  color: '#93c5fd'
+                }}
+              >
+                <ShieldCheck size={20} color="#60a5fa" style={{ flexShrink: 0 }} />
+                <span>
+                  <strong>Authorized Uploader System:</strong> Accounts created here with <strong>CREATOR</strong> or <strong>ADMIN</strong> roles can log in on <code style={{ color: '#fff', background: 'rgba(0,0,0,0.4)', padding: '2px 6px', borderRadius: '4px' }}>app.wavemusic.dpdns.org</code> to directly upload movies/videos straight to Cloudflare R2, edit title & descriptions, and delete videos.
+                </span>
+              </div>
+
+              {/* Users Table */}
               <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '12px', overflow: 'hidden' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
                   <thead>
                     <tr style={{ background: '#0d111a', borderBottom: '1px solid #1e293b', color: '#94a3b8' }}>
-                      <th style={{ padding: '14px 16px' }}>User ID / Username</th>
+                      <th style={{ padding: '14px 16px' }}>Username</th>
                       <th style={{ padding: '14px 16px' }}>Display Name</th>
                       <th style={{ padding: '14px 16px' }}>Email</th>
                       <th style={{ padding: '14px 16px' }}>Role</th>
                       <th style={{ padding: '14px 16px' }}>Status</th>
+                      <th style={{ padding: '14px 16px', textAlign: 'right' }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr style={{ borderBottom: '1px solid #1e293b', color: '#e2e8f0' }}>
-                      <td style={{ padding: '14px 16px', fontWeight: 700, color: '#f97316' }}>VASANTH V</td>
-                      <td style={{ padding: '14px 16px', fontWeight: 600 }}>VASANTH V</td>
-                      <td style={{ padding: '14px 16px', color: '#94a3b8' }}>vasanth@wavemusic.dpdns.org</td>
-                      <td style={{ padding: '14px 16px' }}>
-                        <span style={{ background: 'rgba(249,115,22,0.2)', color: '#f97316', padding: '2px 8px', borderRadius: '4px', fontWeight: 700 }}>
-                          SUPER_ADMIN
-                        </span>
-                      </td>
-                      <td style={{ padding: '14px 16px', color: '#10b981', fontWeight: 600 }}>● ACTIVE</td>
-                    </tr>
-                    <tr style={{ borderBottom: '1px solid #1e293b', color: '#e2e8f0' }}>
-                      <td style={{ padding: '14px 16px', fontWeight: 700 }}>cinematic_studios</td>
-                      <td style={{ padding: '14px 16px', fontWeight: 600 }}>Cinematic Studios</td>
-                      <td style={{ padding: '14px 16px', color: '#94a3b8' }}>creator@platform.io</td>
-                      <td style={{ padding: '14px 16px' }}>
-                        <span style={{ background: 'rgba(59,130,246,0.2)', color: '#3b82f6', padding: '2px 8px', borderRadius: '4px', fontWeight: 700 }}>
-                          CREATOR
-                        </span>
-                      </td>
-                      <td style={{ padding: '14px 16px', color: '#10b981', fontWeight: 600 }}>● ACTIVE</td>
-                    </tr>
+                    {userList.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} style={{ padding: '32px', textAlign: 'center', color: '#64748b' }}>
+                          Loading users from PostgreSQL database...
+                        </td>
+                      </tr>
+                    ) : (
+                      userList.map((u) => {
+                        const roleColor =
+                          u.role === 'SUPER_ADMIN'
+                            ? '#f97316'
+                            : u.role === 'ADMIN'
+                            ? '#a855f7'
+                            : u.role === 'CREATOR'
+                            ? '#3b82f6'
+                            : '#94a3b8';
+
+                        return (
+                          <tr key={u.id} style={{ borderBottom: '1px solid #1e293b', color: '#e2e8f0' }}>
+                            <td style={{ padding: '14px 16px', fontWeight: 700, color: '#fff' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div
+                                  style={{
+                                    width: '28px',
+                                    height: '28px',
+                                    borderRadius: '50%',
+                                    background: 'rgba(249, 115, 22, 0.2)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    color: '#f97316',
+                                    fontWeight: 800,
+                                    fontSize: '12px'
+                                  }}
+                                >
+                                  {(u.username || 'U').charAt(0).toUpperCase()}
+                                </div>
+                                <span>{u.username}</span>
+                              </div>
+                            </td>
+                            <td style={{ padding: '14px 16px', fontWeight: 600 }}>{u.displayName || u.username}</td>
+                            <td style={{ padding: '14px 16px', color: '#94a3b8' }}>{u.email}</td>
+                            <td style={{ padding: '14px 16px' }}>
+                              <span
+                                style={{
+                                  background: `${roleColor}22`,
+                                  color: roleColor,
+                                  border: `1px solid ${roleColor}44`,
+                                  padding: '3px 10px',
+                                  borderRadius: '6px',
+                                  fontWeight: 700,
+                                  fontSize: '11px'
+                                }}
+                              >
+                                {u.role}
+                              </span>
+                            </td>
+                            <td style={{ padding: '14px 16px' }}>
+                              <span
+                                style={{
+                                  color: u.status === 'ACTIVE' ? '#10b981' : '#ef4444',
+                                  fontWeight: 600,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '6px'
+                                }}
+                              >
+                                <span
+                                  style={{
+                                    width: '8px',
+                                    height: '8px',
+                                    borderRadius: '50%',
+                                    background: u.status === 'ACTIVE' ? '#10b981' : '#ef4444'
+                                  }}
+                                />
+                                {u.status || 'ACTIVE'}
+                              </span>
+                            </td>
+                            <td style={{ padding: '14px 16px', textAlign: 'right' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '8px' }}>
+                                <button
+                                  onClick={() => handleOpenEditUser(u)}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    padding: '6px 10px',
+                                    background: 'rgba(59, 130, 246, 0.15)',
+                                    border: '1px solid rgba(59, 130, 246, 0.4)',
+                                    color: '#60a5fa',
+                                    borderRadius: '6px',
+                                    fontSize: '12px',
+                                    fontWeight: 600,
+                                    cursor: 'pointer'
+                                  }}
+                                  title="Edit user details or reset password"
+                                >
+                                  <Edit2 size={13} />
+                                  <span>Edit</span>
+                                </button>
+                                {u.role !== 'SUPER_ADMIN' && (
+                                  <button
+                                    onClick={() => handleDeleteUser(u)}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      padding: '6px 10px',
+                                      background: 'rgba(239, 68, 68, 0.15)',
+                                      border: '1px solid rgba(239, 68, 68, 0.4)',
+                                      color: '#f87171',
+                                      borderRadius: '6px',
+                                      fontSize: '12px',
+                                      fontWeight: 600,
+                                      cursor: 'pointer'
+                                    }}
+                                    title="Delete uploader account"
+                                  >
+                                    <Trash2 size={13} />
+                                    <span>Delete</span>
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1427,6 +1821,347 @@ export default function AdminDashboard() {
                   style={{ padding: '8px 16px', background: '#f97316', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }}
                 >
                   Connect & Save
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Add New Uploader / Admin */}
+      {showAddUserModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '16px', padding: '28px', width: '460px', maxWidth: '90vw' }}>
+            <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: 700, color: '#fff' }}>
+              Create New Uploader / Admin ID
+            </h3>
+            <p style={{ margin: '0 0 16px 0', fontSize: '13px', color: '#94a3b8' }}>
+              Create credentials that can upload, edit, and delete videos on app.wavemusic.dpdns.org.
+            </p>
+
+            {userActionMsg && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  marginBottom: '14px',
+                  fontSize: '13px',
+                  background: userActionMsg.error ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  border: userActionMsg.error ? '1px solid #ef4444' : '1px solid #10b981',
+                  color: userActionMsg.error ? '#f87171' : '#34d399'
+                }}
+              >
+                {userActionMsg.text}
+              </div>
+            )}
+
+            <form onSubmit={handleCreateUser}>
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Username (Required)</label>
+                <input
+                  type="text"
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  placeholder="e.g. uploader_tamil_cinema"
+                  required
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Email Address (Required)</label>
+                <input
+                  type="email"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  placeholder="uploader@wavemusic.dpdns.org"
+                  required
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Password (Required, min 6 characters)</label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Enter secure password"
+                  required
+                  minLength={6}
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Display Name / Channel Name</label>
+                <input
+                  type="text"
+                  value={newDisplayName}
+                  onChange={(e) => setNewDisplayName(e.target.value)}
+                  placeholder="e.g. Tamil Cinema Hits"
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Role & Permission Level</label>
+                <select
+                  value={newRole}
+                  onChange={(e) => setNewRole(e.target.value)}
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                >
+                  <option value="CREATOR">CREATOR (Upload & Manage Videos on VD Player)</option>
+                  <option value="ADMIN">ADMIN (Full Platform Management)</option>
+                  <option value="SUPER_ADMIN">SUPER_ADMIN (Root System Access)</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowAddUserModal(false)}
+                  style={{ padding: '8px 16px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  style={{ padding: '8px 16px', background: 'linear-gradient(135deg, #f97316, #ea580c)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  Create Uploader Account
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Edit Uploader Account */}
+      {showEditUserModal && editingUser && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '16px', padding: '28px', width: '460px', maxWidth: '90vw' }}>
+            <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: 700, color: '#fff' }}>
+              Edit Account: {editingUser.username}
+            </h3>
+
+            {userActionMsg && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  marginBottom: '14px',
+                  fontSize: '13px',
+                  background: userActionMsg.error ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  border: userActionMsg.error ? '1px solid #ef4444' : '1px solid #10b981',
+                  color: userActionMsg.error ? '#f87171' : '#34d399'
+                }}
+              >
+                {userActionMsg.text}
+              </div>
+            )}
+
+            <form onSubmit={handleUpdateUser}>
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Username</label>
+                <input
+                  type="text"
+                  value={editUsername}
+                  onChange={(e) => setEditUsername(e.target.value)}
+                  required
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Email</label>
+                <input
+                  type="email"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                  required
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Display Name</label>
+                <input
+                  type="text"
+                  value={editDisplayName}
+                  onChange={(e) => setEditDisplayName(e.target.value)}
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Reset Password (Optional, leave blank to keep unchanged)</label>
+                <input
+                  type="password"
+                  value={editPassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                  placeholder="Enter new password (min 6 characters)"
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px', display: 'flex', gap: '12px' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Role</label>
+                  <select
+                    value={editRole}
+                    onChange={(e) => setEditRole(e.target.value)}
+                    style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                  >
+                    <option value="CREATOR">CREATOR</option>
+                    <option value="ADMIN">ADMIN</option>
+                    <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                    <option value="USER">USER</option>
+                  </select>
+                </div>
+
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Status</label>
+                  <select
+                    value={editStatus}
+                    onChange={(e) => setEditStatus(e.target.value)}
+                    style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                  >
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="SUSPENDED">SUSPENDED</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowEditUserModal(false)}
+                  style={{ padding: '8px 16px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  style={{ padding: '8px 16px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Change Admin Password */}
+      {showChangeAdminPasswordModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+        >
+          <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '16px', padding: '28px', width: '440px', maxWidth: '90vw' }}>
+            <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: 700, color: '#fff' }}>
+              Change Admin Password
+            </h3>
+            <p style={{ margin: '0 0 16px 0', fontSize: '13px', color: '#94a3b8' }}>
+              Update your administrator login password for admin.wavemusic.dpdns.org.
+            </p>
+
+            {adminPasswordStatus && (
+              <div
+                style={{
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  marginBottom: '14px',
+                  fontSize: '13px',
+                  background: adminPasswordStatus.error ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  border: adminPasswordStatus.error ? '1px solid #ef4444' : '1px solid #10b981',
+                  color: adminPasswordStatus.error ? '#f87171' : '#34d399'
+                }}
+              >
+                {adminPasswordStatus.text}
+              </div>
+            )}
+
+            <form onSubmit={handleChangeAdminPassword}>
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Current Password</label>
+                <input
+                  type="password"
+                  value={currPassword}
+                  onChange={(e) => setCurrPassword(e.target.value)}
+                  placeholder="Enter current password"
+                  required
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>New Password (min 6 characters)</label>
+                <input
+                  type="password"
+                  value={newAdminPassword}
+                  onChange={(e) => setNewAdminPassword(e.target.value)}
+                  placeholder="Enter new secure password"
+                  required
+                  minLength={6}
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>Confirm New Password</label>
+                <input
+                  type="password"
+                  value={confirmAdminPassword}
+                  onChange={(e) => setConfirmAdminPassword(e.target.value)}
+                  placeholder="Confirm new password"
+                  required
+                  minLength={6}
+                  style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowChangeAdminPasswordModal(false)}
+                  style={{ padding: '8px 16px', background: '#1e293b', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  style={{ padding: '8px 16px', background: 'linear-gradient(135deg, #f97316, #ea580c)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  Update Admin Password
                 </button>
               </div>
             </form>

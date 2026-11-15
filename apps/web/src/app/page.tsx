@@ -38,7 +38,8 @@ import {
   BookmarkCheck,
   Menu,
   ShieldCheck,
-  Gauge
+  Gauge,
+  Headphones
 } from 'lucide-react';
 import { YouTubeUploader } from '../components/youtube-uploader';
 
@@ -107,7 +108,7 @@ export default function VDPlayerApp() {
   const [comments, setComments] = useState<CommentItem[]>([]);
   const [newCommentInput, setNewCommentInput] = useState<string>('');
 
-  // Auth & Admin State (vasanth013)
+  // Auth & Admin State (Authorized Uploaders & Admins)
   const [currentUser, setCurrentUser] = useState<{
     id: string;
     username: string;
@@ -140,8 +141,8 @@ export default function VDPlayerApp() {
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
 
   // Sign In Form State
-  const [authUsername, setAuthUsername] = useState<string>('vasanth013');
-  const [authPassword, setAuthPassword] = useState<string>('VASAnth@2008');
+  const [authUsername, setAuthUsername] = useState<string>('');
+  const [authPassword, setAuthPassword] = useState<string>('');
   const [authError, setAuthError] = useState<string>('');
   const [isSubmittingAuth, setIsSubmittingAuth] = useState<boolean>(false);
 
@@ -152,13 +153,93 @@ export default function VDPlayerApp() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Check if active user is vasanth013 admin
+  // Check if active user is an authorized uploader / admin
   const isVasanthAdmin = Boolean(
     currentUser &&
-    (currentUser.username?.toLowerCase() === 'vasanth013' ||
-     currentUser.role === 'SUPER_ADMIN' ||
+    (currentUser.role === 'SUPER_ADMIN' ||
+     currentUser.role === 'ADMIN' ||
+     currentUser.role === 'CREATOR' ||
+     currentUser.username?.toLowerCase() === 'vasanth013' ||
      currentUser.username?.toLowerCase().includes('vasanth'))
   );
+
+  // 24K Cinema Vivid & Dolby Audio Enhancers
+  const [is24kMode, setIs24kMode] = useState<boolean>(true);
+  const [isDolbyAudio, setIsDolbyAudio] = useState<boolean>(true);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const bassFilterRef = useRef<BiquadFilterNode | null>(null);
+  const trebleFilterRef = useRef<BiquadFilterNode | null>(null);
+
+  const initOrToggleDolbyAudio = () => {
+    if (!videoRef.current) return;
+    try {
+      if (!audioContextRef.current) {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        audioContextRef.current = ctx;
+
+        const source = ctx.createMediaElementSource(videoRef.current);
+        audioSourceNodeRef.current = source;
+
+        // Cinematic Bass Boost LowShelf (80Hz, +6dB)
+        const bass = ctx.createBiquadFilter();
+        bass.type = 'lowshelf';
+        bass.frequency.value = 80;
+        bass.gain.value = 6;
+        bassFilterRef.current = bass;
+
+        // Vocal Clarity Peaking Filter (2.8kHz, +2.5dB)
+        const vocal = ctx.createBiquadFilter();
+        vocal.type = 'peaking';
+        vocal.frequency.value = 2800;
+        vocal.gain.value = 2.5;
+
+        // Ultra Treble HighShelf (10kHz, +4dB)
+        const treble = ctx.createBiquadFilter();
+        treble.type = 'highshelf';
+        treble.frequency.value = 10000;
+        treble.gain.value = 4;
+        trebleFilterRef.current = treble;
+
+        // Studio Compressor Limiter
+        const comp = ctx.createDynamicsCompressor();
+        comp.threshold.value = -18;
+        comp.knee.value = 12;
+        comp.ratio.value = 4;
+        comp.attack.value = 0.003;
+        comp.release.value = 0.25;
+
+        // Connect audio graph
+        source.connect(bass);
+        bass.connect(vocal);
+        vocal.connect(treble);
+        treble.connect(comp);
+        comp.connect(ctx.destination);
+      }
+
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume();
+      }
+
+      const nextState = !isDolbyAudio;
+      setIsDolbyAudio(nextState);
+      if (bassFilterRef.current && trebleFilterRef.current) {
+        bassFilterRef.current.gain.value = nextState ? 6 : 0;
+        trebleFilterRef.current.gain.value = nextState ? 4 : 0;
+      }
+      showToast(nextState ? '🎧 Dolby 3D Audio & Bass Boost Activated' : 'Audio Normal EQ Mode');
+    } catch (e) {
+      console.warn('Web Audio notice:', e);
+    }
+  };
+
+  const toggle24kMode = () => {
+    const next = !is24kMode;
+    setIs24kMode(next);
+    showToast(next ? '✨ 24K Ultra-Clarity Cinema HDR Enabled' : 'Standard Dynamic Range Mode');
+  };
 
   // Carousel refs for smooth horizontal scrolling
   const trendingRowRef = useRef<HTMLDivElement>(null);
@@ -406,7 +487,7 @@ export default function VDPlayerApp() {
     showToast('Comment posted!');
   };
 
-  // --- Exclusive Admin Actions (vasanth013) ---
+  // --- Authorized Admin & Uploader Actions ---
 
   // Open Edit Modal
   const handleOpenEdit = (video: VideoItem, e?: React.MouseEvent) => {
@@ -431,14 +512,18 @@ export default function VDPlayerApp() {
     setIsSavingEdit(true);
     try {
       const token = localStorage.getItem('platform_token') || localStorage.getItem('token');
+      const savedUser = currentUser?.username || localStorage.getItem('user_name') || '';
+      const savedKey = localStorage.getItem('user_pass') || 'VASAnth@2008';
+      const reqHeaders: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (token) reqHeaders['Authorization'] = `Bearer ${token}`;
+      if (savedKey) reqHeaders['x-admin-key'] = savedKey;
+      if (savedUser) reqHeaders['x-admin-user'] = savedUser;
+
       const res = await fetch(`${API_BASE}/api/videos/${editingVideo.id}`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': 'VASAnth@2008',
-          'x-admin-user': 'vasanth013',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        },
+        headers: reqHeaders,
         body: JSON.stringify({
           title: editTitle.trim(),
           description: editDescription.trim(),
@@ -507,13 +592,16 @@ export default function VDPlayerApp() {
     setIsDeleting(true);
     try {
       const token = localStorage.getItem('platform_token') || localStorage.getItem('token');
+      const savedUser = currentUser?.username || localStorage.getItem('user_name') || '';
+      const savedKey = localStorage.getItem('user_pass') || 'VASAnth@2008';
+      const delHeaders: Record<string, string> = {};
+      if (token) delHeaders['Authorization'] = `Bearer ${token}`;
+      if (savedKey) delHeaders['x-admin-key'] = savedKey;
+      if (savedUser) delHeaders['x-admin-user'] = savedUser;
+
       const res = await fetch(`${API_BASE}/api/videos/${deletingVideo.id}`, {
         method: 'DELETE',
-        headers: {
-          'x-admin-key': 'VASAnth@2008',
-          'x-admin-user': 'vasanth013',
-          ...(token ? { Authorization: `Bearer ${token}` } : {})
-        }
+        headers: delHeaders
       });
 
       if (!res.ok) {
@@ -562,8 +650,10 @@ export default function VDPlayerApp() {
       localStorage.setItem('platform_user', JSON.stringify(data.user));
       localStorage.setItem('platform_token', data.tokens.accessToken);
       localStorage.setItem('token', data.tokens.accessToken);
+      localStorage.setItem('user_name', data.user.username);
+      localStorage.setItem('user_pass', authPassword);
       setShowSignInModal(false);
-      showToast(`Logged in as Administrator (${data.user.username})`);
+      showToast(`Welcome, ${data.user.displayName || data.user.username}! Role: ${data.user.role}`);
     } catch (err: any) {
       setAuthError(err.message || 'Login failed.');
     } finally {
@@ -843,7 +933,33 @@ export default function VDPlayerApp() {
             )}
           </div>
 
-          {/* Upload Button: Exclusive to vasanth013 */}
+          {/* Download Android APK Button */}
+          <a
+            href="/vd-player.apk"
+            download="vd-player.apk"
+            style={{
+              background: 'rgba(34, 197, 94, 0.15)',
+              border: '1px solid rgba(34, 197, 94, 0.4)',
+              color: '#4ade80',
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: 700,
+              textDecoration: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+              whiteSpace: 'nowrap'
+            }}
+            title="Download Official VD Player Android APK (Auto-fits all screen sizes)"
+          >
+            <Download size={15} />
+            <span className="hidden-mobile">Download App</span>
+          </a>
+
+          {/* Upload Button: Exclusive to authorized uploaders/admins */}
           {isVasanthAdmin ? (
             <button
               onClick={() => setShowUploadModal(true)}
@@ -1073,7 +1189,9 @@ export default function VDPlayerApp() {
               style={{
                 width: '100%',
                 height: '100%',
-                objectFit: 'contain'
+                objectFit: 'contain',
+                filter: is24kMode ? 'contrast(1.08) saturate(1.15) brightness(1.02)' : 'none',
+                imageRendering: is24kMode ? '-webkit-optimize-contrast' : 'auto'
               }}
             />
 
@@ -1097,28 +1215,74 @@ export default function VDPlayerApp() {
               </span>
             </div>
 
-            {/* Performance streaming badge */}
+            {/* Performance streaming & 24K audio badges */}
             <div
               style={{
                 position: 'absolute',
                 top: '16px',
                 right: '20px',
-                background: 'rgba(0,0,0,0.6)',
-                backdropFilter: 'blur(8px)',
-                padding: '4px 10px',
-                borderRadius: '6px',
-                fontSize: '11px',
-                fontWeight: 600,
-                color: '#22c55e',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '6px',
+                gap: '8px',
                 opacity: showControls ? 1 : 0,
                 transition: 'opacity 0.3s'
               }}
             >
-              <Gauge size={13} />
-              <span>Direct R2 Range Streaming • Fast Buffering</span>
+              <div
+                style={{
+                  background: 'rgba(234, 179, 8, 0.2)',
+                  border: '1px solid rgba(234, 179, 8, 0.4)',
+                  backdropFilter: 'blur(8px)',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: 800,
+                  color: '#facc15',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <Sparkles size={12} />
+                <span>24K Cinema Vivid</span>
+              </div>
+
+              <div
+                style={{
+                  background: 'rgba(59, 130, 246, 0.2)',
+                  border: '1px solid rgba(59, 130, 246, 0.4)',
+                  backdropFilter: 'blur(8px)',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: 800,
+                  color: '#60a5fa',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <Headphones size={12} />
+                <span>Dolby 3D Audio</span>
+              </div>
+
+              <div
+                style={{
+                  background: 'rgba(0,0,0,0.6)',
+                  backdropFilter: 'blur(8px)',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  color: '#22c55e',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}
+              >
+                <Gauge size={13} />
+                <span>Direct R2</span>
+              </div>
             </div>
 
             {/* Center Big Play Button if paused */}
@@ -1297,6 +1461,50 @@ export default function VDPlayerApp() {
                       </button>
                     ))}
                   </div>
+
+                  {/* 24K Cinema Vivid Toggle */}
+                  <button
+                    onClick={toggle24kMode}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      background: is24kMode ? 'rgba(234, 179, 8, 0.25)' : 'rgba(255,255,255,0.08)',
+                      border: is24kMode ? '1px solid #eab308' : 'none',
+                      color: is24kMode ? '#facc15' : '#9ca3af',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      padding: '3px 8px',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
+                    }}
+                    title="Toggle 24K Ultra Cinema Vivid Filter"
+                  >
+                    <Sparkles size={12} />
+                    <span>{is24kMode ? '24K Vivid' : 'Standard'}</span>
+                  </button>
+
+                  {/* Dolby 3D Audio Toggle */}
+                  <button
+                    onClick={initOrToggleDolbyAudio}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      background: isDolbyAudio ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255,255,255,0.08)',
+                      border: isDolbyAudio ? '1px solid #3b82f6' : 'none',
+                      color: isDolbyAudio ? '#60a5fa' : '#9ca3af',
+                      fontSize: '11px',
+                      fontWeight: 800,
+                      padding: '3px 8px',
+                      borderRadius: '4px',
+                      cursor: 'pointer'
+                    }}
+                    title="Toggle Dolby 3D Audio & Bass Boost EQ"
+                  >
+                    <Headphones size={12} />
+                    <span>{isDolbyAudio ? 'Dolby EQ' : 'Normal EQ'}</span>
+                  </button>
 
                   {/* Fullscreen */}
                   <button
@@ -1847,7 +2055,7 @@ export default function VDPlayerApp() {
                   No videos uploaded yet
                 </h3>
                 <p style={{ color: '#9ca3af', fontSize: '14px', margin: '0 0 20px 0' }}>
-                  Log in as administrator (vasanth013) to upload your first movie or video straight to Cloudflare R2!
+                  Log in with your uploader account to upload your first movie or video straight to Cloudflare R2!
                 </p>
                 <button
                   onClick={() => setShowSignInModal(true)}
@@ -1861,7 +2069,7 @@ export default function VDPlayerApp() {
                     cursor: 'pointer'
                   }}
                 >
-                  Admin Login
+                  Uploader Login
                 </button>
               </div>
             )}
@@ -2007,7 +2215,7 @@ export default function VDPlayerApp() {
 
       {/* ================= 4. MODALS ================= */}
 
-      {/* 4A. SIGN IN MODAL (vasanth013) */}
+      {/* 4A. SIGN IN MODAL (Authorized Uploaders & Admins) */}
       {showSignInModal && (
         <div
           style={{
@@ -2037,7 +2245,7 @@ export default function VDPlayerApp() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <img src="/vd-logo.jpg" alt="VD" style={{ width: '32px', height: '32px', borderRadius: '8px' }} />
                 <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 800, color: '#fff' }}>
-                  Admin Sign In
+                  Uploader & Admin Sign In
                 </h2>
               </div>
               <button
@@ -2049,7 +2257,7 @@ export default function VDPlayerApp() {
             </div>
 
             <p style={{ margin: '0 0 18px 0', fontSize: '13px', color: '#9ca3af', lineHeight: '1.5' }}>
-              Only user <strong>vasanth013</strong> can upload, edit details, and delete videos from Cloudflare R2.
+              Log in with your administrator or uploader account to upload, edit details, and delete videos from Cloudflare R2.
             </p>
 
             {authError && (
@@ -2071,12 +2279,13 @@ export default function VDPlayerApp() {
             <form onSubmit={handleSignIn} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
                 <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#d1d5db', marginBottom: '6px' }}>
-                  Username
+                  Username or Email
                 </label>
                 <input
                   type="text"
                   value={authUsername}
                   onChange={(e) => setAuthUsername(e.target.value)}
+                  placeholder="Enter username or email"
                   required
                   style={{
                     width: '100%',
@@ -2099,6 +2308,7 @@ export default function VDPlayerApp() {
                   type="password"
                   value={authPassword}
                   onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Enter password"
                   required
                   style={{
                     width: '100%',
@@ -2136,7 +2346,7 @@ export default function VDPlayerApp() {
         </div>
       )}
 
-      {/* 4B. EDIT VIDEO DETAILS MODAL (vasanth013) */}
+      {/* 4B. EDIT VIDEO DETAILS MODAL */}
       {showEditModal && editingVideo && (
         <div
           style={{
@@ -2311,7 +2521,7 @@ export default function VDPlayerApp() {
         </div>
       )}
 
-      {/* 4C. DELETE VIDEO CONFIRMATION MODAL (vasanth013) */}
+      {/* 4C. DELETE VIDEO CONFIRMATION MODAL */}
       {showDeleteModal && deletingVideo && (
         <div
           style={{
@@ -2419,7 +2629,7 @@ export default function VDPlayerApp() {
         </div>
       )}
 
-      {/* 4D. UPLOAD VIDEO MODAL (Exclusive to vasanth013) */}
+      {/* 4D. UPLOAD VIDEO MODAL */}
       {showUploadModal && (
         <div
           style={{
@@ -2748,7 +2958,7 @@ function VideoCard({
           </div>
         </div>
 
-        {/* Admin Quick Actions (Exclusive to vasanth013) */}
+        {/* Admin Quick Actions */}
         {isAdmin && (
           <div
             style={{

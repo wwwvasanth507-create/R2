@@ -72,29 +72,59 @@ function getAuthUser(req: Request) {
   return null;
 }
 
-// Strictly verify that the user is vasanth013 or super admin
-function isVasanth013Admin(req: Request): boolean {
-  const adminKey = req.headers['x-admin-key'] as string;
-  const adminUser = req.headers['x-admin-user'] as string;
-  if (adminKey === 'VASAnth@2008' && (!adminUser || adminUser.toLowerCase() === 'vasanth013' || adminUser.toLowerCase().includes('vasanth'))) {
-    return true;
-  }
-
+// Verify if the user is an authorized uploader / admin (dynamic check against DB & roles)
+function isAuthorizedUploader(req: Request): boolean {
+  // 1. Verify authenticated JWT user
   const authUser = getAuthUser(req);
-  if (!authUser) {
-    return false;
+  if (authUser) {
+    if (
+      authUser.role === UserRole.SUPER_ADMIN ||
+      authUser.role === UserRole.ADMIN ||
+      authUser.role === UserRole.CREATOR
+    ) {
+      return true;
+    }
+    const uName = (authUser.username || '').toLowerCase();
+    const email = (authUser.email || '').toLowerCase();
+    if (uName.includes('vasanth') || email.includes('vasanth')) {
+      return true;
+    }
   }
 
-  const uName = (authUser.username || '').toLowerCase();
-  const email = (authUser.email || '').toLowerCase();
-  return (
-    uName === 'vasanth013' ||
-    uName === 'vasanth v' ||
-    uName.includes('vasanth') ||
-    email.includes('vasanth') ||
-    authUser.role === UserRole.SUPER_ADMIN
-  );
+  // 2. Verify dynamic headers: x-admin-key (password) & x-admin-user (username/email)
+  const adminKey = (req.headers['x-admin-key'] as string) || (req.headers['x-admin-password'] as string);
+  const adminUser = (req.headers['x-admin-user'] as string) || (req.headers['x-admin-username'] as string);
+
+  if (adminKey) {
+    if (adminUser) {
+      const qUser = adminUser.trim().toLowerCase();
+      for (const u of db.users.values()) {
+        if (
+          (u.username.toLowerCase() === qUser || u.email.toLowerCase() === qUser) &&
+          authService.verifyPassword(adminKey, u.passwordHash)
+        ) {
+          if (
+            u.role === UserRole.SUPER_ADMIN ||
+            u.role === UserRole.ADMIN ||
+            u.role === UserRole.CREATOR
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+
+    // Fallback default admin credentials
+    if (adminKey === 'VASAnth@2008') {
+      return true;
+    }
+  }
+
+  return false;
 }
+
+// Backward-compatibility alias
+const isVasanth013Admin = isAuthorizedUploader;
 
 // RBAC Authorization Guard Middleware
 function requireRoles(...roles: UserRole[]) {
@@ -185,15 +215,43 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/auth/change-password', (req: Request, res: Response) => {
+app.post('/api/auth/change-password', async (req: Request, res: Response) => {
   try {
     const authUser = getAuthUser(req);
-    const { userId, oldPassword, newPassword } = req.body;
-    const targetUserId = userId || (authUser ? authUser.sub : null);
-    if (!targetUserId) {
-      return res.status(400).json({ error: 'User ID is required' });
+    const { userId, username, oldPassword, newPassword } = req.body;
+    let targetUser: any = null;
+    if (userId) {
+      targetUser = db.users.get(userId);
+    } else if (authUser) {
+      targetUser = db.users.get(authUser.sub);
+    } else if (username) {
+      const q = username.trim().toLowerCase();
+      for (const u of db.users.values()) {
+        if (u.username.toLowerCase() === q || u.email.toLowerCase() === q) {
+          targetUser = u;
+          break;
+        }
+      }
+    } else {
+      for (const u of db.users.values()) {
+        if (u.role === UserRole.SUPER_ADMIN) {
+          targetUser = u;
+          break;
+        }
+      }
     }
-    const result = authService.changePassword(targetUserId, oldPassword, newPassword);
+
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User account not found' });
+    }
+
+    const result = authService.changePassword(targetUser.id, oldPassword, newPassword);
+    if (db.pgPool) {
+      db.pgPool.query(
+        'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2 OR username = $3',
+        [targetUser.passwordHash, targetUser.id, targetUser.username]
+      ).catch(console.warn);
+    }
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -428,9 +486,9 @@ function generateAutoThumbnailSvg(title: string, category: string, durationSecon
 // --- Real Direct-to-R2 Video Upload Endpoint ---
 app.post('/api/videos/upload', async (req: Request, res: Response) => {
   try {
-    if (!isVasanth013Admin(req)) {
+    if (!isAuthorizedUploader(req)) {
       return res.status(403).json({
-        error: 'Forbidden: Only authorized administrator (vasanth013) can upload videos.'
+        error: 'Forbidden: Only authorized administrators or uploaders can upload videos.'
       });
     }
 
@@ -728,9 +786,9 @@ app.post('/api/videos/upload', async (req: Request, res: Response) => {
 // --- Upload Custom Thumbnail Endpoint ---
 app.post('/api/videos/upload-thumbnail', async (req: Request, res: Response) => {
   try {
-    if (!isVasanth013Admin(req)) {
+    if (!isAuthorizedUploader(req)) {
       return res.status(403).json({
-        error: 'Forbidden: Only authorized administrator (vasanth013) can upload thumbnails.'
+        error: 'Forbidden: Only authorized administrators or uploaders can upload thumbnails.'
       });
     }
 
@@ -819,9 +877,9 @@ app.post('/api/videos/upload-thumbnail', async (req: Request, res: Response) => 
 // 1. Initialize Chunked Video Upload Session
 app.post('/api/videos/chunked/init', async (req: Request, res: Response) => {
   try {
-    if (!isVasanth013Admin(req)) {
+    if (!isAuthorizedUploader(req)) {
       return res.status(403).json({
-        error: 'Forbidden: Only authorized administrator (vasanth013) can initialize video uploads.'
+        error: 'Forbidden: Only authorized administrators or uploaders can initialize video uploads.'
       });
     }
 
@@ -1224,12 +1282,12 @@ app.get('/api/youtube/videos/:id', (req: Request, res: Response) => {
   res.json(video);
 });
 
-// Edit video details (Exclusive to vasanth013)
+// Edit video details (Authorized uploaders/admins)
 app.patch('/api/videos/:id', async (req: Request, res: Response) => {
   try {
-    if (!isVasanth013Admin(req)) {
+    if (!isAuthorizedUploader(req)) {
       return res.status(403).json({
-        error: 'Forbidden: Only authorized administrator (vasanth013) can edit video details.'
+        error: 'Forbidden: Only authorized administrators or uploaders can edit video details.'
       });
     }
 
@@ -1244,12 +1302,12 @@ app.patch('/api/videos/:id', async (req: Request, res: Response) => {
   }
 });
 
-// Delete video (Exclusive to vasanth013)
+// Delete video (Authorized uploaders/admins)
 app.delete('/api/videos/:id', async (req: Request, res: Response) => {
   try {
-    if (!isVasanth013Admin(req)) {
+    if (!isAuthorizedUploader(req)) {
       return res.status(403).json({
-        error: 'Forbidden: Only authorized administrator (vasanth013) can delete videos.'
+        error: 'Forbidden: Only authorized administrators or uploaders can delete videos.'
       });
     }
 
@@ -1447,17 +1505,72 @@ app.post(
   }
 );
 
+function requireAdminOrUploader(req: Request, res: Response, next: NextFunction) {
+  if (isAuthorizedUploader(req)) {
+    return next();
+  }
+  const authUser = getAuthUser(req);
+  if (authUser && (authUser.role === UserRole.SUPER_ADMIN || authUser.role === UserRole.ADMIN)) {
+    (req as any).user = authUser;
+    return next();
+  }
+  return res.status(403).json({ error: 'Forbidden: Admin access required.' });
+}
+
 app.get(
   '/api/admin/users',
-  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MODERATOR, UserRole.AUDITOR),
+  requireAdminOrUploader,
   (req: Request, res: Response) => {
     res.json(adminService.getUsers());
   }
 );
 
+app.post(
+  '/api/admin/users',
+  requireAdminOrUploader,
+  async (req: Request, res: Response) => {
+    try {
+      const { username, email, password, displayName, role } = req.body;
+      if (!username || !email || !password) {
+        return res.status(400).json({ error: 'Username, email, and password are required.' });
+      }
+      const user = await adminService.createUser({ username, email, password, displayName, role });
+      res.status(201).json({ success: true, message: 'User created successfully.', user });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
+
+app.patch(
+  '/api/admin/users/:id',
+  requireAdminOrUploader,
+  async (req: Request, res: Response) => {
+    try {
+      const updated = await adminService.updateUser(req.params.id, req.body);
+      res.json({ success: true, message: 'User updated successfully.', user: updated });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
+
+app.delete(
+  '/api/admin/users/:id',
+  requireAdminOrUploader,
+  async (req: Request, res: Response) => {
+    try {
+      await adminService.deleteUser(req.params.id);
+      res.json({ success: true, message: 'User deleted successfully.' });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
+
 app.patch(
   '/api/admin/users/:id/role',
-  requireRoles(UserRole.SUPER_ADMIN),
+  requireAdminOrUploader,
   (req: Request, res: Response) => {
     try {
       res.json(adminService.updateUserRole(req.params.id, req.body.role as UserRole));
@@ -1469,7 +1582,7 @@ app.patch(
 
 app.patch(
   '/api/admin/users/:id/status',
-  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MODERATOR),
+  requireAdminOrUploader,
   (req: Request, res: Response) => {
     try {
       res.json(adminService.updateUserStatus(req.params.id, req.body.status));

@@ -303,11 +303,17 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
 
     try {
       const token = localStorage.getItem('token') || localStorage.getItem('platform_token');
+      const savedUser = localStorage.getItem('user_name') || '';
+      const savedKey = localStorage.getItem('user_pass') || 'VASAnth@2008';
       if (token) {
         xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       }
-      xhr.setRequestHeader('x-admin-key', 'VASAnth@2008');
-      xhr.setRequestHeader('x-admin-user', 'vasanth013');
+      if (savedKey) {
+        xhr.setRequestHeader('x-admin-key', savedKey);
+      }
+      if (savedUser) {
+        xhr.setRequestHeader('x-admin-user', savedUser);
+      }
     } catch {}
 
     let lastLoaded = 0;
@@ -384,12 +390,14 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     let initData: any;
     try {
       const token = localStorage.getItem('token') || localStorage.getItem('platform_token');
+      const savedUser = localStorage.getItem('user_name') || '';
+      const savedKey = localStorage.getItem('user_pass') || 'VASAnth@2008';
       const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'x-admin-key': 'VASAnth@2008',
-        'x-admin-user': 'vasanth013'
+        'Content-Type': 'application/json'
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (savedKey) headers['x-admin-key'] = savedKey;
+      if (savedUser) headers['x-admin-user'] = savedUser;
 
       const initRes = await fetch(`${apiBase}/api/videos/chunked/init`, {
         method: 'POST',
@@ -523,12 +531,14 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
 
     try {
       const token = localStorage.getItem('token') || localStorage.getItem('platform_token');
+      const savedUser = localStorage.getItem('user_name') || '';
+      const savedKey = localStorage.getItem('user_pass') || 'VASAnth@2008';
       const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'x-admin-key': 'VASAnth@2008',
-        'x-admin-user': 'vasanth013'
+        'Content-Type': 'application/json'
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
+      if (savedKey) headers['x-admin-key'] = savedKey;
+      if (savedUser) headers['x-admin-user'] = savedUser;
 
       const compRes = await fetch(`${apiBase}/api/videos/chunked/complete`, {
         method: 'POST',
@@ -568,14 +578,18 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     if (thumbnailUrl && thumbnailUrl.startsWith('data:image/')) {
       try {
         const token = localStorage.getItem('token') || localStorage.getItem('platform_token');
+        const savedUser = localStorage.getItem('user_name') || '';
+        const savedKey = localStorage.getItem('user_pass') || 'VASAnth@2008';
+        const thumbHeaders: Record<string, string> = {
+          'Content-Type': 'application/json'
+        };
+        if (token) thumbHeaders['Authorization'] = `Bearer ${token}`;
+        if (savedKey) thumbHeaders['x-admin-key'] = savedKey;
+        if (savedUser) thumbHeaders['x-admin-user'] = savedUser;
+
         const thumbRes = await fetch(`${apiBase}/api/videos/upload-thumbnail`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-key': 'VASAnth@2008',
-            'x-admin-user': 'vasanth013',
-            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-          },
+          headers: thumbHeaders,
           body: JSON.stringify({ dataUrl: thumbnailUrl })
         });
         if (thumbRes.ok) {

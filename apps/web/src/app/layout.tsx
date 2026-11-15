@@ -6,7 +6,8 @@ export const metadata = {
   icons: {
     icon: '/vd-logo.jpg',
     apple: '/vd-logo.jpg'
-  }
+  },
+  manifest: '/manifest.json'
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <link rel="icon" href="/vd-logo.jpg" />
+        <link rel="manifest" href="/manifest.json" />
       </head>
       <body style={{ margin: 0, padding: 0, background: '#08090d', minHeight: '100vh', display: 'flex', flexDirection: 'column', overflowX: 'hidden' }}>
         {children}
