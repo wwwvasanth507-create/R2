@@ -43,6 +43,23 @@ function getAuthUser(req: Request) {
   return null;
 }
 
+// RBAC Authorization Guard Middleware
+function requireRoles(...roles: UserRole[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const authUser = getAuthUser(req);
+    if (!authUser) {
+      return res.status(401).json({ error: 'Authentication required. Missing or invalid Bearer token.' });
+    }
+    if (roles.length > 0 && !roles.includes(authUser.role)) {
+      return res.status(403).json({
+        error: `Forbidden: role '${authUser.role}' does not have required permissions [${roles.join(', ')}]`
+      });
+    }
+    (req as any).user = authUser;
+    next();
+  };
+}
+
 // --- Health Check ---
 app.get('/health', (req: Request, res: Response) => {
   res.json({
@@ -118,6 +135,34 @@ app.get('/api/uploads/sessions/:id/status', (req: Request, res: Response) => {
     res.json(status);
   } catch (err: any) {
     res.status(404).json({ error: err.message });
+  }
+});
+
+// Resume an interrupted upload session: returns fresh presigned URLs for pending/failed chunks
+app.post('/api/uploads/sessions/:id/resume', async (req: Request, res: Response) => {
+  try {
+    const session = await uploadService.getResumableUploadSession(req.params.id);
+    res.json(session);
+  } catch (err: any) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+// HTTP HEAD request for distributed file metadata
+app.head('/api/files/:id/download', async (req: Request, res: Response) => {
+  try {
+    const file = db.files.get(req.params.id);
+    if (!file) {
+      return res.status(404).end();
+    }
+    const headResult = storageManager.rangeGateway.handleHeadRequest(file);
+    res.status(headResult.statusCode);
+    for (const [key, val] of Object.entries(headResult.headers)) {
+      res.setHeader(key, val);
+    }
+    res.end();
+  } catch (err: any) {
+    res.status(500).end();
   }
 });
 
@@ -293,69 +338,121 @@ app.post('/api/instagram/messages', (req: Request, res: Response) => {
   res.status(201).json(instagramService.sendMessage(senderId, recipientId, content));
 });
 
-// --- Admin Dashboard Endpoints ---
-app.get('/api/admin/overview', (req: Request, res: Response) => {
-  res.json(adminService.getDashboardOverview());
-});
-
-app.get('/api/admin/accounts', (req: Request, res: Response) => {
-  res.json(adminService.getAccounts());
-});
-
-app.post('/api/admin/accounts', async (req: Request, res: Response) => {
-  try {
-    const account = await adminService.addStorageAccount(req.body);
-    res.status(201).json(account);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+// --- Admin Dashboard Endpoints (Protected with RBAC) ---
+app.get(
+  '/api/admin/overview',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.AUDITOR),
+  (req: Request, res: Response) => {
+    res.json(adminService.getDashboardOverview());
   }
-});
+);
 
-app.get('/api/admin/buckets', (req: Request, res: Response) => {
-  res.json(adminService.getBuckets());
-});
-
-app.post('/api/admin/buckets', (req: Request, res: Response) => {
-  try {
-    const bucket = adminService.addBucket(req.body);
-    res.status(201).json(bucket);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+app.get(
+  '/api/admin/accounts',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.AUDITOR),
+  (req: Request, res: Response) => {
+    res.json(adminService.getAccounts());
   }
-});
+);
 
-app.patch('/api/admin/buckets/:id', (req: Request, res: Response) => {
-  try {
-    const bucket = adminService.updateBucket(req.params.id, req.body);
-    res.json(bucket);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+app.post(
+  '/api/admin/accounts',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN),
+  async (req: Request, res: Response) => {
+    try {
+      const account = await adminService.addStorageAccount(req.body);
+      res.status(201).json(account);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
   }
-});
+);
 
-app.get('/api/admin/alerts', (req: Request, res: Response) => {
-  res.json(adminService.getAlerts());
-});
-
-app.post('/api/admin/alerts/:id/resolve', (req: Request, res: Response) => {
-  try {
-    res.json(adminService.resolveAlert(req.params.id));
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+app.get(
+  '/api/admin/buckets',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.AUDITOR),
+  (req: Request, res: Response) => {
+    res.json(adminService.getBuckets());
   }
-});
+);
 
-app.get('/api/admin/users', (req: Request, res: Response) => {
-  res.json(adminService.getUsers());
-});
-
-app.patch('/api/admin/users/:id/role', (req: Request, res: Response) => {
-  try {
-    res.json(adminService.updateUserRole(req.params.id, req.body.role as UserRole));
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+app.post(
+  '/api/admin/buckets',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN),
+  (req: Request, res: Response) => {
+    try {
+      const bucket = adminService.addBucket(req.body);
+      res.status(201).json(bucket);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
   }
-});
+);
+
+app.patch(
+  '/api/admin/buckets/:id',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN),
+  (req: Request, res: Response) => {
+    try {
+      const bucket = adminService.updateBucket(req.params.id, req.body);
+      res.json(bucket);
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
+
+app.get(
+  '/api/admin/alerts',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.AUDITOR),
+  (req: Request, res: Response) => {
+    res.json(adminService.getAlerts());
+  }
+);
+
+app.post(
+  '/api/admin/alerts/:id/resolve',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN),
+  (req: Request, res: Response) => {
+    try {
+      res.json(adminService.resolveAlert(req.params.id));
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
+
+app.get(
+  '/api/admin/users',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MODERATOR, UserRole.AUDITOR),
+  (req: Request, res: Response) => {
+    res.json(adminService.getUsers());
+  }
+);
+
+app.patch(
+  '/api/admin/users/:id/role',
+  requireRoles(UserRole.SUPER_ADMIN),
+  (req: Request, res: Response) => {
+    try {
+      res.json(adminService.updateUserRole(req.params.id, req.body.role as UserRole));
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
+
+app.patch(
+  '/api/admin/users/:id/status',
+  requireRoles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.MODERATOR),
+  (req: Request, res: Response) => {
+    try {
+      res.json(adminService.updateUserStatus(req.params.id, req.body.status));
+    } catch (err: any) {
+      res.status(400).json({ error: err.message });
+    }
+  }
+);
 
 // --- Video Transcoding & HLS Manifest Proxy ---
 app.post('/api/transcoding/process/:fileId', async (req: Request, res: Response) => {

@@ -1,5 +1,6 @@
 import {
   VideoProcessingStatus,
+  FileUploadStatus,
   IFileManifest
 } from '@platform/common';
 import { DatabaseService } from '../database/db.service';
@@ -83,6 +84,10 @@ export class VideoTranscodingService {
     const file = this.db.files.get(fileId);
     if (!file) {
       throw new Error(`File ${fileId} not found.`);
+    }
+
+    if (file.uploadStatus !== FileUploadStatus.READY) {
+      throw new Error(`Cannot process video ${fileId}: upload status is '${file.uploadStatus}', expected 'READY'.`);
     }
 
     const jobId = `job-${Date.now()}`;

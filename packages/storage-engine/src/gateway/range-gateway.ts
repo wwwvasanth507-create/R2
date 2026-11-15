@@ -13,6 +13,15 @@ export interface RangeStreamResponse {
   stream: Readable;
 }
 
+export class RangeNotSatisfiableError extends Error {
+  public readonly totalSizeBytes: number;
+  constructor(totalSizeBytes: number) {
+    super(`Requested range not satisfiable for file size ${totalSizeBytes}`);
+    this.name = 'RangeNotSatisfiableError';
+    this.totalSizeBytes = totalSizeBytes;
+  }
+}
+
 export class RangeDownloadGateway {
   constructor(
     private readonly getProviderForAccount: (accountId: string) => IStorageProvider
@@ -20,6 +29,7 @@ export class RangeDownloadGateway {
 
   /**
    * Parse the HTTP `Range` header (e.g. "bytes=0-1048575", "bytes=5242880-")
+   * Throws RangeNotSatisfiableError if range is out of bounds.
    */
   public parseRangeHeader(
     rangeHeader: string | undefined,
@@ -31,7 +41,7 @@ export class RangeDownloadGateway {
 
     const matches = rangeHeader.replace('bytes=', '').trim().split('-');
     if (matches.length !== 2) {
-      return null;
+      throw new RangeNotSatisfiableError(totalSizeBytes);
     }
 
     let start = matches[0] !== '' ? parseInt(matches[0], 10) : undefined;
@@ -52,15 +62,38 @@ export class RangeDownloadGateway {
       isNaN(start) ||
       isNaN(end) ||
       start > end ||
-      start >= totalSizeBytes
+      start >= totalSizeBytes ||
+      start < 0
     ) {
-      return null;
+      throw new RangeNotSatisfiableError(totalSizeBytes);
     }
 
     // Cap end at totalSizeBytes - 1
     end = Math.min(end, totalSizeBytes - 1);
 
     return { start, end };
+  }
+
+  /**
+   * Handles HTTP HEAD request for a distributed file manifest without streaming any byte chunks.
+   */
+  public handleHeadRequest(manifest: IFileManifest): RangeStreamResponse {
+    const headers: Record<string, string | number> = {
+      'Content-Type': manifest.mimeType || 'application/octet-stream',
+      'Content-Length': manifest.totalSizeBytes,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=86400, stale-while-revalidate=3600',
+      ETag: manifest.totalSha256Checksum ? `"${manifest.totalSha256Checksum}"` : `"${manifest.id}"`
+    };
+
+    const emptyStream = new PassThrough();
+    emptyStream.end();
+
+    return {
+      statusCode: 200,
+      headers,
+      stream: emptyStream
+    };
   }
 
   /**
@@ -77,7 +110,25 @@ export class RangeDownloadGateway {
 
     // Sort chunks strictly by chunkIndex to preserve byte order
     const sortedChunks = [...manifest.chunks].sort((a, b) => a.chunkIndex - b.chunkIndex);
-    const parsedRange = this.parseRangeHeader(rangeHeader, manifest.totalSizeBytes);
+    let parsedRange: ParsedByteRange | null = null;
+    try {
+      parsedRange = this.parseRangeHeader(rangeHeader, manifest.totalSizeBytes);
+    } catch (err) {
+      if (err instanceof RangeNotSatisfiableError) {
+        const emptyStream = new PassThrough();
+        emptyStream.end();
+        return {
+          statusCode: 416, // Range Not Satisfiable
+          headers: {
+            'Content-Range': `bytes */${manifest.totalSizeBytes}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': 0
+          },
+          stream: emptyStream
+        };
+      }
+      throw err;
+    }
 
     let startOffset: number;
     let endOffset: number;

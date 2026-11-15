@@ -102,6 +102,11 @@ export class UploadService {
       throw new Error(`Chunk ${dto.chunkIndex} for file ${dto.fileId} not found.`);
     }
 
+    // Idempotency check: if chunk is already verified, return file status without double-committing capacity
+    if (chunk.status === ChunkUploadStatus.VERIFIED) {
+      return { isFileReady: file.uploadStatus === FileUploadStatus.READY };
+    }
+
     // Size validation
     if (dto.actualSizeBytes !== chunk.chunkSizeBytes) {
       chunk.status = ChunkUploadStatus.FAILED;
@@ -175,6 +180,63 @@ export class UploadService {
         bucketName: c.bucketName,
         status: c.status
       }))
+    };
+  }
+
+  /**
+   * Resumes an interrupted upload session. Generates fresh presigned URLs for
+   * any pending or failed chunks, without regenerating or re-uploading verified chunks.
+   */
+  public async getResumableUploadSession(fileId: string) {
+    const file = this.db.files.get(fileId);
+    if (!file) {
+      throw new Error(`File ${fileId} not found.`);
+    }
+
+    const chunks = Array.from(this.db.fileChunks.values())
+      .filter((c) => c.fileId === fileId)
+      .sort((a, b) => a.chunkIndex - b.chunkIndex);
+
+    const pendingChunksWithUrls: any[] = [];
+    let verifiedCount = 0;
+
+    for (const chunk of chunks) {
+      if (chunk.status === ChunkUploadStatus.VERIFIED) {
+        verifiedCount++;
+      } else {
+        const provider = this.storageManager.getProvider(chunk.storageAccountId);
+        const freshUrl = await provider.generatePresignedUploadUrl(
+          chunk.bucketName,
+          chunk.objectKey,
+          3600,
+          'application/octet-stream'
+        );
+        pendingChunksWithUrls.push({
+          chunkIndex: chunk.chunkIndex,
+          byteStart: chunk.byteStart,
+          byteEnd: chunk.byteEnd,
+          chunkSizeBytes: chunk.chunkSizeBytes,
+          bucketId: chunk.bucketId,
+          bucketName: chunk.bucketName,
+          storageAccountId: chunk.storageAccountId,
+          objectKey: chunk.objectKey,
+          presignedUploadUrl: freshUrl,
+          status: chunk.status
+        });
+      }
+    }
+
+    return {
+      fileId,
+      originalFilename: file.originalFilename,
+      totalSizeBytes: file.totalSizeBytes,
+      chunkCount: file.chunkCount,
+      verifiedChunksCount: verifiedCount,
+      pendingChunksCount: pendingChunksWithUrls.length,
+      progressPercent: file.chunkCount > 0 ? Math.round((verifiedCount / file.chunkCount) * 100) : 0,
+      uploadStatus: file.uploadStatus,
+      isDistributed: file.isDistributed,
+      pendingChunks: pendingChunksWithUrls
     };
   }
 }

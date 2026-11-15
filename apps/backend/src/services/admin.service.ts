@@ -44,7 +44,10 @@ export class AdminService {
 
   // --- Storage Accounts ---
   public getAccounts(): IStorageAccount[] {
-    return Array.from(this.db.storageAccounts.values());
+    return Array.from(this.db.storageAccounts.values()).map((acc) => {
+      const { secretAccessKey, ...safeAcc } = acc;
+      return safeAcc;
+    });
   }
 
   public async addStorageAccount(dto: CreateStorageAccountDto): Promise<IStorageAccount> {
@@ -68,7 +71,8 @@ export class AdminService {
     // Test connectivity
     const provider = this.storageManager.getProvider(id);
     this.db.storageAccounts.set(id, newAccount);
-    return newAccount;
+    const { secretAccessKey, ...safeAccount } = newAccount;
+    return safeAccount;
   }
 
   // --- Bucket Management ---
