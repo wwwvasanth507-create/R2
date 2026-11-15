@@ -98,6 +98,9 @@ export class DatabaseService {
     if (!this.pgPool) return;
     try {
       const accRes = await this.pgPool.query('SELECT * FROM storage_accounts');
+      if (accRes.rows.length > 0) {
+        this.storageAccounts.clear();
+      }
       for (const row of accRes.rows) {
         const acc: IStorageAccount & { secretAccessKey: string } = {
           id: row.id,
@@ -117,6 +120,9 @@ export class DatabaseService {
       }
 
       const bktRes = await this.pgPool.query('SELECT * FROM storage_buckets');
+      if (bktRes.rows.length > 0) {
+        this.storageBuckets.clear();
+      }
       for (const row of bktRes.rows) {
         const quota = Number(row.logical_quota_bytes || DEFAULT_LOGICAL_QUOTA_BYTES);
         const used = Number(row.used_storage_bytes || 0);
@@ -139,6 +145,102 @@ export class DatabaseService {
         this.storageBuckets.set(bkt.id, bkt);
       }
       console.log(`[POSTGRES] Synchronized ${accRes.rows.length} storage accounts and ${bktRes.rows.length} buckets from database.`);
+
+      // Synchronize real videos from PostgreSQL
+      const vidRes = await this.pgPool.query('SELECT * FROM videos ORDER BY created_at DESC');
+      if (vidRes.rows.length > 0) {
+        this.videos.clear();
+        for (const row of vidRes.rows) {
+          const video: IVideo = {
+            id: row.id,
+            channelId: row.channel_id,
+            channel: {
+              id: row.channel_id,
+              userId: 'user-admin-1',
+              title: 'VASANTH V',
+              handle: '@vasanth',
+              description: 'Official channel of VASANTH V',
+              avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+              subscriberCount: 25000,
+              videoCount: 1,
+              totalViews: Number(row.views_count || 0),
+              createdAt: row.created_at || new Date()
+            },
+            title: row.title,
+            description: row.description || '',
+            thumbnailUrl: row.thumbnail_url,
+            masterPlaylistUrl: row.master_playlist_url,
+            durationSeconds: row.duration_seconds || 180,
+            viewsCount: Number(row.views_count || 0),
+            likesCount: Number(row.likes_count || 0),
+            dislikesCount: Number(row.dislikes_count || 0),
+            commentCount: Number(row.comment_count || 0),
+            visibility: (row.visibility as VideoVisibility) || VideoVisibility.PUBLIC,
+            isShort: row.is_short || false,
+            tags: row.tags || [],
+            createdAt: row.created_at || new Date()
+          };
+          this.videos.set(video.id, video);
+        }
+        console.log(`[POSTGRES] Synchronized ${vidRes.rows.length} real videos from database.`);
+      }
+
+      // Synchronize real files from PostgreSQL
+      const fileRes = await this.pgPool.query('SELECT * FROM files');
+      if (fileRes.rows.length > 0) {
+        this.files.clear();
+        this.fileChunks.clear();
+        const primaryBucket = this.storageBuckets.values().next().value;
+        for (const row of fileRes.rows) {
+          const size = Number(row.total_size_bytes);
+          const sanitizedFilename = (row.original_filename || 'video.mp4').replace(/[^a-zA-Z0-9._-]/g, '_');
+          const thumbMatch = row.original_filename ? row.original_filename.match(/^thumb-([a-f0-9-]+)\./) : null;
+          const thumbUuid = thumbMatch ? thumbMatch[1] : row.id.replace(/^thumb-/, '');
+          const objectKey = (row.original_filename && (row.original_filename.startsWith('thumb-') || row.original_filename.includes('thumb')))
+            ? `thumbnails/${thumbUuid}.jpg`
+            : `videos/${row.id}/${sanitizedFilename}`;
+
+          const chunk: IFileChunkManifest = {
+            id: `chk-${row.id}-0`,
+            fileId: row.id,
+            chunkIndex: 0,
+            byteStart: 0,
+            byteEnd: Math.max(0, size - 1),
+            chunkSizeBytes: size,
+            bucketId: primaryBucket ? primaryBucket.id : 'c0000000-0000-0000-0000-000000000001',
+            bucketName: primaryBucket ? primaryBucket.bucketName : 'vasanth01-r2',
+            storageAccountId: primaryBucket ? primaryBucket.storageAccountId : 'b0000000-0000-0000-0000-794756325126',
+            objectKey: objectKey,
+            status: ChunkUploadStatus.VERIFIED,
+            verifiedAt: new Date()
+          };
+
+          const fileManifest: IFileManifest = {
+            id: row.id,
+            ownerId: row.owner_id,
+            originalFilename: row.original_filename,
+            mimeType: row.mime_type,
+            totalSizeBytes: size,
+            totalSha256Checksum: row.total_sha256_checksum,
+            chunkCount: 1,
+            chunkSizeBytes: size,
+            uploadStatus: (row.upload_status as FileUploadStatus) || FileUploadStatus.READY,
+            processingStatus: VideoProcessingStatus.COMPLETED,
+            isDistributed: false,
+            createdAt: row.created_at || new Date(),
+            updatedAt: row.updated_at || new Date(),
+            chunks: [chunk]
+          };
+
+          this.files.set(fileManifest.id, fileManifest);
+          if (row.original_filename && row.original_filename.startsWith('thumb-')) {
+            const friendlyThumbId = row.original_filename.replace(/\.[^/.]+$/, '');
+            this.files.set(friendlyThumbId, fileManifest);
+          }
+          this.fileChunks.set(chunk.id, chunk);
+        }
+        console.log(`[POSTGRES] Synchronized ${fileRes.rows.length} real files from database.`);
+      }
     } catch (err: any) {
       console.warn('[POSTGRES] Storage synchronization notice:', err.message);
     }

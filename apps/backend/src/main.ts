@@ -252,7 +252,20 @@ app.head('/api/files/:id/download', async (req: Request, res: Response) => {
 // Seamless HTTP Range Virtual Reassembly Download Gateway!
 app.get('/api/files/:id/download', async (req: Request, res: Response) => {
   try {
-    const file = db.files.get(req.params.id);
+    let file = db.files.get(req.params.id);
+    if (!file) {
+      const cleanParam = req.params.id.replace(/^thumb-/, '');
+      for (const f of db.files.values()) {
+        if (
+          f.id === req.params.id ||
+          f.id === cleanParam ||
+          (f.originalFilename && (f.originalFilename.includes(req.params.id) || f.originalFilename.includes(cleanParam)))
+        ) {
+          file = f;
+          break;
+        }
+      }
+    }
     if (!file) {
       return res.status(404).json({ error: 'File not found.' });
     }
@@ -335,6 +348,51 @@ app.post('/api/netflix/watch-history', (req: Request, res: Response) => {
   );
   res.json(result);
 });
+
+// --- Auto-generate Branded HD Video Thumbnail SVG ---
+function generateAutoThumbnailSvg(title: string, category: string, durationSeconds?: number): string {
+  const safeTitle = (title || 'Video Title')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .slice(0, 65);
+
+  const safeCat = (category || 'Entertainment').toUpperCase();
+  const mins = Math.floor((durationSeconds || 180) / 60);
+  const secs = String(Math.floor((durationSeconds || 180) % 60)).padStart(2, '0');
+  const durStr = `${mins}:${secs}`;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090d16" />
+      <stop offset="40%" stop-color="#141829" />
+      <stop offset="100%" stop-color="#2a0845" />
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3ea6ff" />
+      <stop offset="100%" stop-color="#ec4899" />
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#bg)" />
+  <path d="M0,500 Q320,400 640,500 T1280,500 L1280,720 L0,720 Z" fill="#ec4899" opacity="0.12" />
+  <path d="M0,540 Q320,460 640,540 T1280,540 L1280,720 L0,720 Z" fill="#3ea6ff" opacity="0.18" />
+  <!-- Central Play Icon -->
+  <circle cx="640" cy="300" r="60" fill="rgba(255,255,255,0.08)" stroke="url(#glow)" stroke-width="3" />
+  <polygon points="630,275 665,300 630,325" fill="#ffffff" />
+  <!-- Category Pill -->
+  <rect x="70" y="70" width="${safeCat.length * 12 + 30}" height="34" rx="17" fill="url(#glow)" />
+  <text x="85" y="93" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="bold" fill="#ffffff">${safeCat}</text>
+  <!-- Brand Watermark -->
+  <text x="1210" y="93" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="900" letter-spacing="3" fill="#3ea6ff">WAVEMUSIC</text>
+  <!-- Video Title -->
+  <text x="70" y="470" font-family="system-ui, -apple-system, sans-serif" font-size="44" font-weight="800" fill="#ffffff">${safeTitle}</text>
+  <!-- Duration Badge -->
+  <rect x="1150" y="640" width="65" height="32" rx="6" fill="rgba(0,0,0,0.85)" />
+  <text x="1182" y="662" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="bold" fill="#ffffff">${durStr}</text>
+</svg>`;
+}
 
 // --- Real Direct-to-R2 Video Upload Endpoint ---
 app.post('/api/videos/upload', async (req: Request, res: Response) => {
@@ -493,6 +551,54 @@ app.post('/api/videos/upload', async (req: Request, res: Response) => {
         }
       } catch (err: any) {
         console.warn('Thumbnail processing notice:', err.message);
+      }
+    }
+
+    if (!thumbnailUrl || thumbnailUrl.includes('unsplash.com')) {
+      try {
+        const svgContent = generateAutoThumbnailSvg(title, category, durationSeconds);
+        const thumbBuffer = Buffer.from(svgContent, 'utf-8');
+        const thumbKey = `thumbnails/${fileId}.svg`;
+        await provider.putObject(targetBucket.bucketName, thumbKey, thumbBuffer, 'image/svg+xml', {
+          contentLength: String(thumbBuffer.length)
+        });
+
+        const thumbFileId = `thumb-${fileId}`;
+        const thumbChunk = {
+          id: `chk-${thumbFileId}-0`,
+          fileId: thumbFileId,
+          chunkIndex: 0,
+          byteStart: 0,
+          byteEnd: thumbBuffer.length - 1,
+          chunkSizeBytes: thumbBuffer.length,
+          bucketId: targetBucket.id,
+          bucketName: targetBucket.bucketName,
+          storageAccountId: targetBucket.storageAccountId,
+          objectKey: thumbKey,
+          status: ChunkUploadStatus.VERIFIED,
+          verifiedAt: new Date()
+        };
+        const thumbManifest: IFileManifest = {
+          id: thumbFileId,
+          ownerId: userId,
+          originalFilename: `${fileId}-thumb.svg`,
+          mimeType: 'image/svg+xml',
+          totalSizeBytes: thumbBuffer.length,
+          chunkCount: 1,
+          chunkSizeBytes: thumbBuffer.length,
+          uploadStatus: FileUploadStatus.READY,
+          processingStatus: VideoProcessingStatus.COMPLETED,
+          isDistributed: false,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          chunks: [thumbChunk]
+        };
+        db.files.set(thumbFileId, thumbManifest);
+        db.fileChunks.set(thumbChunk.id, thumbChunk);
+        await db.saveFileToPostgres(thumbManifest);
+        thumbnailUrl = `/api/files/${thumbFileId}/download`;
+      } catch (err: any) {
+        console.warn('Auto-thumbnail generation notice:', err.message);
       }
     }
 

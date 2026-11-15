@@ -43,6 +43,9 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
   const [fileSizeFormatted, setFileSizeFormatted] = useState('');
   const [videoDuration, setVideoDuration] = useState<number>(0);
   const [thumbnailUrl, setThumbnailUrl] = useState<string>('');
+  const [autoThumbnails, setAutoThumbnails] = useState<string[]>([]);
+  const [selectedThumbIndex, setSelectedThumbIndex] = useState<number>(0);
+  const [isCustomThumbnail, setIsCustomThumbnail] = useState<boolean>(false);
   const [isAutoThumbnail, setIsAutoThumbnail] = useState(true);
 
   // Form Fields
@@ -88,8 +91,147 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  // Extract 3 Candidate Frames across Video Timeline (YouTube Studio Style)
+  const extractVideoThumbnails = async (selectedFile: File): Promise<{ duration: number; thumbnails: string[] }> => {
+    return new Promise((resolve) => {
+      const cleanName = selectedFile.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ').trim();
+
+      const generateFallbackThumbs = (titleText: string): string[] => {
+        const fallbacks: string[] = [];
+        const themes = [
+          { bg: ['#1e3a8a', '#3b82f6'], badge: 'FRAME 01' },
+          { bg: ['#0f172a', '#334155'], badge: 'FRAME 02' },
+          { bg: ['#831843', '#e11d48'], badge: 'FRAME 03' }
+        ];
+        themes.forEach((theme) => {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = 640;
+            canvas.height = 360;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              const grad = ctx.createLinearGradient(0, 0, 640, 360);
+              grad.addColorStop(0, theme.bg[0]);
+              grad.addColorStop(1, theme.bg[1]);
+              ctx.fillStyle = grad;
+              ctx.fillRect(0, 0, 640, 360);
+
+              // WaveMusic Branding
+              ctx.fillStyle = '#ff0000';
+              ctx.fillRect(40, 40, 16, 24);
+              ctx.fillStyle = '#ffffff';
+              ctx.font = 'bold 20px sans-serif';
+              ctx.fillText('WaveMusic', 66, 58);
+
+              // Title
+              ctx.fillStyle = '#ffffff';
+              ctx.font = 'bold 26px sans-serif';
+              const displayTitle = titleText.length > 28 ? titleText.slice(0, 28) + '...' : titleText;
+              ctx.fillText(displayTitle, 40, 180);
+
+              // Frame Badge
+              ctx.fillStyle = 'rgba(0,0,0,0.6)';
+              ctx.fillRect(40, 280, 100, 30);
+              ctx.fillStyle = '#38bdf8';
+              ctx.font = 'bold 12px sans-serif';
+              ctx.fillText(theme.badge, 52, 300);
+
+              fallbacks.push(canvas.toDataURL('image/jpeg', 0.85));
+            }
+          } catch {}
+        });
+        return fallbacks.length === 3 ? fallbacks : [
+          'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800',
+          'https://images.unsplash.com/photo-1518770660439-4636190af475?w=800',
+          'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=800'
+        ];
+      };
+
+      try {
+        const videoElem = document.createElement('video');
+        videoElem.preload = 'auto';
+        const fileUrl = URL.createObjectURL(selectedFile);
+        videoElem.src = fileUrl;
+        videoElem.muted = true;
+        videoElem.playsInline = true;
+
+        const capturedThumbs: string[] = [];
+        let duration = 0;
+        let isDone = false;
+
+        const finish = (resultThumbs: string[]) => {
+          if (isDone) return;
+          isDone = true;
+          try {
+            URL.revokeObjectURL(fileUrl);
+          } catch {}
+          resolve({ duration: duration || 120, thumbnails: resultThumbs });
+        };
+
+        const captureFrameAt = (timeSec: number): Promise<string | null> => {
+          return new Promise((res) => {
+            const onSeeked = () => {
+              videoElem.removeEventListener('seeked', onSeeked);
+              try {
+                const canvas = document.createElement('canvas');
+                canvas.width = 640;
+                canvas.height = 360;
+                const ctx = canvas.getContext('2d');
+                if (ctx) {
+                  ctx.drawImage(videoElem, 0, 0, canvas.width, canvas.height);
+                  res(canvas.toDataURL('image/jpeg', 0.85));
+                  return;
+                }
+              } catch {}
+              res(null);
+            };
+            videoElem.addEventListener('seeked', onSeeked);
+            videoElem.currentTime = Math.max(0.1, timeSec);
+          });
+        };
+
+        videoElem.onloadedmetadata = async () => {
+          duration = videoElem.duration || 0;
+          const t1 = Math.max(0.5, duration * 0.15);
+          const t2 = Math.max(1.0, duration * 0.50);
+          const t3 = Math.max(1.5, duration * 0.85);
+
+          try {
+            const f1 = await captureFrameAt(t1);
+            if (f1) capturedThumbs.push(f1);
+            const f2 = await captureFrameAt(t2);
+            if (f2) capturedThumbs.push(f2);
+            const f3 = await captureFrameAt(t3);
+            if (f3) capturedThumbs.push(f3);
+          } catch {}
+
+          if (capturedThumbs.length === 0) {
+            finish(generateFallbackThumbs(cleanName));
+          } else {
+            while (capturedThumbs.length < 3) {
+              capturedThumbs.push(capturedThumbs[0]);
+            }
+            finish(capturedThumbs);
+          }
+        };
+
+        videoElem.onerror = () => {
+          finish(generateFallbackThumbs(cleanName));
+        };
+
+        setTimeout(() => {
+          if (!isDone) {
+            finish(capturedThumbs.length > 0 ? capturedThumbs : generateFallbackThumbs(cleanName));
+          }
+        }, 3500);
+      } catch {
+        resolve({ duration: 120, thumbnails: generateFallbackThumbs(cleanName) });
+      }
+    });
+  };
+
   // Handle Video File Selection
-  const handleFileChosen = (selectedFile: File) => {
+  const handleFileChosen = async (selectedFile: File) => {
     setFile(selectedFile);
     setFileSizeFormatted(formatBytes(selectedFile.size));
 
@@ -100,50 +242,18 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
       .trim();
     setTitle(cleanName || 'My Uploaded Video');
 
-    // Attempt video thumbnail and duration auto-extraction
-    try {
-      const videoElem = document.createElement('video');
-      videoElem.preload = 'metadata';
-      videoElem.src = URL.createObjectURL(selectedFile);
-      videoElem.muted = true;
-      videoElem.playsInline = true;
-
-      videoElem.onloadedmetadata = () => {
-        const dur = videoElem.duration || 0;
-        setVideoDuration(dur);
-        if (dur > 0 && dur < 60) {
-          setIsShort(true);
-        }
-        // Seek to 1 second for thumbnail
-        videoElem.currentTime = Math.min(1.0, dur > 1 ? 1.0 : dur / 2);
-      };
-
-      videoElem.onseeked = () => {
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = videoElem.videoWidth || 640;
-          canvas.height = videoElem.videoHeight || 360;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(videoElem, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-            setThumbnailUrl(dataUrl);
-            setIsAutoThumbnail(true);
-          }
-        } catch {
-          // Ignored
-        } finally {
-          URL.revokeObjectURL(videoElem.src);
-        }
-      };
-
-      videoElem.onerror = () => {
-        URL.revokeObjectURL(videoElem.src);
-        // Fallback placeholder thumbnail
-        setThumbnailUrl('https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800');
-      };
-    } catch {
-      setThumbnailUrl('https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800');
+    // Auto-extract candidate frames
+    const { duration, thumbnails } = await extractVideoThumbnails(selectedFile);
+    setVideoDuration(duration);
+    if (duration > 0 && duration < 60) {
+      setIsShort(true);
+    }
+    setAutoThumbnails(thumbnails);
+    if (thumbnails.length > 0) {
+      setThumbnailUrl(thumbnails[0]);
+      setSelectedThumbIndex(0);
+      setIsCustomThumbnail(false);
+      setIsAutoThumbnail(true);
     }
 
     setStep('details');
@@ -157,7 +267,9 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
       reader.onload = (event) => {
         if (event.target?.result) {
           setThumbnailUrl(event.target.result as string);
+          setIsCustomThumbnail(true);
           setIsAutoThumbnail(false);
+          setSelectedThumbIndex(-1);
         }
       };
       reader.readAsDataURL(thumbFile);
@@ -556,80 +668,71 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
             </div>
           </div>
 
-          {/* Thumbnail Section */}
-          <div style={{ marginBottom: '20px' }}>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#aaa', marginBottom: '8px' }}>
-              Thumbnail
-            </label>
-            <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          {/* YouTube Studio Style Thumbnail Section */}
+          <div style={{ marginBottom: '22px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#aaa' }}>
+                Thumbnail
+              </label>
+              <span style={{ fontSize: '11px', color: '#888' }}>
+                Select an auto-generated frame or upload a custom image
+              </span>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+              {/* Custom Thumbnail Upload Card */}
               <div
+                onClick={() => thumbInputRef.current?.click()}
                 style={{
-                  width: '160px',
-                  height: '90px',
+                  height: '86px',
                   borderRadius: '8px',
+                  background: isCustomThumbnail ? '#1e293b' : '#181818',
+                  border: isCustomThumbnail ? '2px solid #3ea6ff' : '1px dashed #444',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  position: 'relative',
                   overflow: 'hidden',
-                  background: '#181818',
-                  border: '1px solid #444',
-                  position: 'relative'
+                  transition: 'all 0.15s ease'
                 }}
               >
-                {thumbnailUrl ? (
-                  <img
-                    src={thumbnailUrl}
-                    alt="Preview"
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  />
+                {isCustomThumbnail && thumbnailUrl ? (
+                  <>
+                    <img
+                      src={thumbnailUrl}
+                      alt="Custom Thumbnail"
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: '4px',
+                        right: '4px',
+                        background: '#3ea6ff',
+                        borderRadius: '50%',
+                        width: '18px',
+                        height: '18px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#000',
+                        fontSize: '11px',
+                        fontWeight: 'bold'
+                      }}
+                    >
+                      ✓
+                    </div>
+                  </>
                 ) : (
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      height: '100%',
-                      color: '#666'
-                    }}
-                  >
-                    <ImageIcon size={28} />
-                  </div>
+                  <>
+                    <ImageIcon size={22} color="#888" />
+                    <span style={{ fontSize: '11px', color: '#aaa', marginTop: '6px', fontWeight: 500 }}>
+                      + Upload
+                    </span>
+                  </>
                 )}
-                {isAutoThumbnail && thumbnailUrl && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      bottom: '4px',
-                      left: '4px',
-                      background: 'rgba(0,0,0,0.7)',
-                      padding: '2px 6px',
-                      borderRadius: '4px',
-                      fontSize: '10px',
-                      color: '#3ea6ff'
-                    }}
-                  >
-                    Auto-Captured
-                  </div>
-                )}
-              </div>
-
-              <div style={{ flex: 1 }}>
-                <p style={{ margin: '0 0 8px 0', fontSize: '12px', color: '#888' }}>
-                  Auto-captured from frame 1 of your video. You can also upload a custom image.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => thumbInputRef.current?.click()}
-                  style={{
-                    background: '#282828',
-                    border: '1px solid #444',
-                    color: '#fff',
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    padding: '8px 14px',
-                    borderRadius: '18px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Upload Custom Thumbnail
-                </button>
                 <input
                   ref={thumbInputRef}
                   type="file"
@@ -638,6 +741,75 @@ export const YouTubeUploader: React.FC<YouTubeUploaderProps> = ({
                   onChange={handleCustomThumbnailChosen}
                 />
               </div>
+
+              {/* 3 Auto-generated Frame Thumbnails */}
+              {autoThumbnails.map((thumb, idx) => {
+                const isSelected = !isCustomThumbnail && selectedThumbIndex === idx;
+                return (
+                  <div
+                    key={idx}
+                    onClick={() => {
+                      setSelectedThumbIndex(idx);
+                      setIsCustomThumbnail(false);
+                      setIsAutoThumbnail(true);
+                      setThumbnailUrl(thumb);
+                    }}
+                    style={{
+                      height: '86px',
+                      borderRadius: '8px',
+                      background: '#181818',
+                      border: isSelected ? '2px solid #3ea6ff' : '1px solid #333',
+                      position: 'relative',
+                      overflow: 'hidden',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease',
+                      boxShadow: isSelected ? '0 0 10px rgba(62, 166, 255, 0.4)' : 'none'
+                    }}
+                  >
+                    <img
+                      src={thumb}
+                      alt={`Auto Frame ${idx + 1}`}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    />
+                    {isSelected && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '4px',
+                          right: '4px',
+                          background: '#3ea6ff',
+                          borderRadius: '50%',
+                          width: '18px',
+                          height: '18px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#000',
+                          fontSize: '11px',
+                          fontWeight: 'bold'
+                        }}
+                      >
+                        ✓
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: '3px',
+                        left: '4px',
+                        background: 'rgba(0,0,0,0.7)',
+                        padding: '1px 5px',
+                        borderRadius: '3px',
+                        fontSize: '9px',
+                        color: isSelected ? '#3ea6ff' : '#aaa',
+                        fontWeight: 600
+                      }}
+                    >
+                      {idx === 0 ? 'Frame 1' : idx === 1 ? 'Frame 2' : 'Frame 3'}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
