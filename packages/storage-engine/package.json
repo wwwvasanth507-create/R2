@@ -1,0 +1,20 @@
+{
+  "name": "@platform/storage-engine",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "dependencies": {
+    "@platform/common": "*",
+    "@aws-sdk/client-s3": "^3.577.0",
+    "@aws-sdk/s3-request-presigner": "^3.577.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "typescript": "^5.4.5"
+  }
+}

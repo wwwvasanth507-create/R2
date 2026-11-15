@@ -1,0 +1,123 @@
+import {
+  IVideo,
+  IChannel,
+  IVideoComment,
+  ISubscription,
+  VideoVisibility
+} from '@platform/common';
+import { DatabaseService } from '../database/db.service';
+
+export class YouTubeService {
+  constructor(private readonly db: DatabaseService) {}
+
+  public getVideos(search?: string, tag?: string): IVideo[] {
+    let list = Array.from(this.db.videos.values()).filter(
+      (v) => v.visibility === VideoVisibility.PUBLIC && !v.isShort
+    );
+
+    if (tag) {
+      list = list.filter((v) => v.tags.includes(tag));
+    }
+
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter(
+        (v) => v.title.toLowerCase().includes(q) || v.description.toLowerCase().includes(q)
+      );
+    }
+
+    return list;
+  }
+
+  public getShorts(): IVideo[] {
+    return Array.from(this.db.videos.values()).filter(
+      (v) => v.visibility === VideoVisibility.PUBLIC && v.isShort
+    );
+  }
+
+  public getVideoById(id: string): (IVideo & { comments: IVideoComment[] }) | undefined {
+    const video = this.db.videos.get(id);
+    if (!video) return undefined;
+
+    video.viewsCount = (video.viewsCount || 0) + 1;
+
+    const comments = Array.from(this.db.videoComments.values())
+      .filter((c) => c.videoId === id)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    return { ...video, comments };
+  }
+
+  public addComment(videoId: string, userId: string, content: string, parentId?: string): IVideoComment {
+    const user = this.db.users.get(userId);
+    const comment: IVideoComment = {
+      id: `comm-${Date.now()}`,
+      videoId,
+      userId,
+      user: user
+        ? {
+            id: user.id,
+            username: user.username,
+            displayName: user.displayName,
+            avatarUrl: user.avatarUrl
+          }
+        : undefined,
+      parentId,
+      content,
+      likesCount: 0,
+      createdAt: new Date()
+    };
+
+    this.db.videoComments.set(comment.id, comment);
+
+    const video = this.db.videos.get(videoId);
+    if (video) {
+      video.commentCount = (video.commentCount || 0) + 1;
+    }
+
+    return comment;
+  }
+
+  public toggleLike(videoId: string, isLike: boolean): { likesCount: number; dislikesCount: number } {
+    const video = this.db.videos.get(videoId);
+    if (!video) throw new Error('Video not found.');
+
+    if (isLike) {
+      video.likesCount = (video.likesCount || 0) + 1;
+    } else {
+      video.dislikesCount = (video.dislikesCount || 0) + 1;
+    }
+
+    return { likesCount: video.likesCount, dislikesCount: video.dislikesCount };
+  }
+
+  public getChannel(channelId: string): (IChannel & { videos: IVideo[] }) | undefined {
+    const channel = this.db.channels.get(channelId);
+    if (!channel) return undefined;
+
+    const videos = Array.from(this.db.videos.values()).filter((v) => v.channelId === channelId);
+    return { ...channel, videos };
+  }
+
+  public toggleSubscription(userId: string, channelId: string): { isSubscribed: boolean; subscriberCount: number } {
+    const subKey = `sub-${userId}-${channelId}`;
+    const channel = this.db.channels.get(channelId);
+    if (!channel) throw new Error('Channel not found.');
+
+    if (this.db.subscriptions.has(subKey)) {
+      this.db.subscriptions.delete(subKey);
+      channel.subscriberCount = Math.max(0, channel.subscriberCount - 1);
+      return { isSubscribed: false, subscriberCount: channel.subscriberCount };
+    } else {
+      const sub: ISubscription = {
+        id: subKey,
+        userId,
+        channelId,
+        createdAt: new Date()
+      };
+      this.db.subscriptions.set(subKey, sub);
+      channel.subscriberCount += 1;
+      return { isSubscribed: true, subscriberCount: channel.subscriberCount };
+    }
+  }
+}
