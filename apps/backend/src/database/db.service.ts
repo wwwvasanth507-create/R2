@@ -213,8 +213,8 @@ export class DatabaseService {
       rating: ContentRating.PG13,
       backdropUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=1280',
       posterUrl: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=500',
-      trailerUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-      masterPlaylistUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      trailerUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+      masterPlaylistUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
       audioTracks: [
         { language: 'en', label: 'English (Original 5.1)', url: 'audio/en.m3u8' },
         { language: 'es', label: 'Español', url: 'audio/es.m3u8' }
@@ -255,7 +255,7 @@ export class DatabaseService {
       overview: 'Detective Ren intercepts an encrypted telemetry signal from a ghost satellite.',
       durationMinutes: 54,
       stillUrl: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=600',
-      masterPlaylistUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      masterPlaylistUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
       subtitles: [{ language: 'en', label: 'English [CC]', url: 'subs/en.vtt' }],
       audioTracks: [{ language: 'en', label: 'English (Original)', url: 'audio/en.m3u8' }]
     };
@@ -278,13 +278,13 @@ export class DatabaseService {
     this.channels.set(channel1.id, channel1);
 
     const ytVideo1: IVideo = {
-      id: 'yt-camera-test-2026',
+      id: 'yt-distributed-storage-r2',
       channelId: channel1.id,
       channel: channel1,
       title: 'Building a Distributed 20GB Video Storage Engine with Cloudflare R2',
       description: 'A deep architectural dive into multi-account sequential bucket allocation and range streaming.',
       thumbnailUrl: 'https://images.unsplash.com/photo-1492691527719-9d1e07e534b4?w=800',
-      masterPlaylistUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      masterPlaylistUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
       durationSeconds: 840,
       viewsCount: 12480,
       likesCount: 940,
@@ -304,7 +304,7 @@ export class DatabaseService {
       title: '3 Color Grading Tricks for Cinematic Contrast! #Shorts',
       description: 'How to shape luminance in DaVinci Resolve.',
       thumbnailUrl: 'https://images.unsplash.com/photo-1485846234645-a62644f84728?w=800',
-      masterPlaylistUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      masterPlaylistUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
       durationSeconds: 45,
       viewsCount: 89400,
       likesCount: 6800,
@@ -328,7 +328,7 @@ export class DatabaseService {
         avatarUrl: creatorUser.avatarUrl,
         isVerified: true
       },
-      caption: 'Golden hour anamorphic rig test on location in the desert. 🌅🎥 What is your go-to cinema glass?',
+      caption: 'Golden hour anamorphic rig on location in the Mojave Desert. 🌅🎥 What is your go-to cinema glass?',
       location: 'Mojave Desert, California',
       likesCount: 3412,
       commentsCount: 89,

@@ -52,6 +52,68 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const qualities = ['Auto (Adaptive ABR)', '1080p (FHD)', '720p (HD)', '480p (SD)', '360p'];
 
+  useEffect(() => {
+    if (!videoRef.current || !src) return;
+    const video = videoRef.current;
+
+    let hlsInstance: any = null;
+
+    if (src.includes('.m3u8')) {
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src;
+      } else if (typeof window !== 'undefined') {
+        const attachHls = () => {
+          const Hls = (window as any).Hls;
+          if (Hls && Hls.isSupported()) {
+            hlsInstance = new Hls({ enableWorker: true });
+            hlsInstance.loadSource(src);
+            hlsInstance.attachMedia(video);
+          }
+        };
+
+        if (!(window as any).Hls) {
+          const script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js';
+          script.onload = attachHls;
+          document.head.appendChild(script);
+        } else {
+          attachHls();
+        }
+      }
+    } else {
+      video.src = src;
+    }
+
+    return () => {
+      if (hlsInstance) {
+        hlsInstance.destroy();
+      }
+    };
+  }, [src]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === 'f' || e.key === 'F') {
+        toggleFullscreen();
+      } else if (e.key === 'm' || e.key === 'M') {
+        toggleMute();
+      } else if (e.key === 'Escape' && onClose) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPlaying, onClose]);
+
+  const toggleMute = () => {
+    if (!videoRef.current) return;
+    videoRef.current.muted = !isMuted;
+    setIsMuted(!isMuted);
+  };
+
   const togglePlay = () => {
     if (!videoRef.current) return;
     if (isPlaying) {
