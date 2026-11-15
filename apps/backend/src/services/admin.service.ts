@@ -19,7 +19,7 @@ export class AdminService {
   constructor(
     private readonly db: DatabaseService,
     private readonly storageManager: StorageManagerService
-  ) {}
+  ) { }
 
   public getDashboardOverview() {
     const storageMetrics = this.storageManager.getStorageMetrics();
@@ -51,20 +51,17 @@ export class AdminService {
   }
 
   public async addStorageAccount(dto: CreateStorageAccountDto & { bucketName?: string }): Promise<IStorageAccount> {
-    const rawId = (dto as any).id || dto.accountId;
-    const id = (rawId && typeof rawId === 'string' && rawId.length === 36 && rawId.includes('-'))
-      ? rawId
+    const id = (dto.accountId && dto.accountId.length === 36 && dto.accountId.includes('-'))
+      ? dto.accountId
       : 'b0000000-0000-0000-0000-' + String(Date.now()).slice(-12).padStart(12, '0');
-
-    const displayName = dto.displayName || (dto as any).name || 'Cloudflare R2 Account';
 
     const newAccount: IStorageAccount & { secretAccessKey: string } = {
       id,
-      displayName,
-      accountId: dto.accountId || id,
-      endpoint: dto.endpoint || `https://${dto.accountId || id}.r2.cloudflarestorage.com`,
-      accessKeyId: dto.accessKeyId || 'cf_key_prod',
-      secretAccessKey: dto.secretAccessKey || 'cf_secret_prod',
+      displayName: dto.displayName,
+      accountId: dto.accountId,
+      endpoint: dto.endpoint,
+      accessKeyId: dto.accessKeyId,
+      secretAccessKey: dto.secretAccessKey,
       secretAccessKeyMasked: dto.secretAccessKey ? dto.secretAccessKey.substring(0, 6) + '...' + dto.secretAccessKey.slice(-4) : 'cf_sec...prod',
       status: StorageAccountStatus.ACTIVE,
       monthlyBudgetUsd: dto.monthlyBudgetUsd || 50.0,
@@ -90,19 +87,18 @@ export class AdminService {
              endpoint = EXCLUDED.endpoint,
              access_key_id = EXCLUDED.access_key_id,
              secret_access_key_encrypted = EXCLUDED.secret_access_key_encrypted;`,
-          [id, displayName, newAccount.accountId, newAccount.endpoint, newAccount.accessKeyId, newAccount.secretAccessKey, newAccount.monthlyBudgetUsd]
+          [id, dto.displayName, dto.accountId, dto.endpoint, dto.accessKeyId, dto.secretAccessKey || 'cf_secret_prod', dto.monthlyBudgetUsd || 50.0]
         );
-        console.log(`[POSTGRES] Storage account "${displayName}" (${id}) persisted to PostgreSQL.`);
+        console.log(`[POSTGRES] Storage account "${dto.displayName}" (${id}) persisted to PostgreSQL.`);
       } catch (err: any) {
         console.warn('[POSTGRES] Account persistence notice:', err.message);
       }
     }
 
     // If bucketName is specified, create this Cloudflare account's single 8 GB R2 bucket immediately
-    const bName = dto.bucketName || (dto as any).name;
-    if (bName && bName.trim()) {
+    if (dto.bucketName && dto.bucketName.trim()) {
       this.addBucket({
-        bucketName: bName.trim().toLowerCase(),
+        bucketName: dto.bucketName.trim().toLowerCase(),
         storageAccountId: id,
         region: 'auto',
         logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
@@ -115,8 +111,6 @@ export class AdminService {
   }
 
   public async deleteStorageAccount(accountId: string): Promise<{ success: boolean; id: string }> {
-    if (!accountId) return { success: false, id: '' };
-    const accIdLower = String(accountId).toLowerCase();
     let targetAccKey: string | undefined;
     let account: IStorageAccount | undefined;
 
@@ -125,11 +119,7 @@ export class AdminService {
       account = this.db.storageAccounts.get(accountId);
     } else {
       for (const [k, a] of this.db.storageAccounts.entries()) {
-        if (
-          a.id === accountId ||
-          a.accountId === accountId ||
-          (a.displayName && a.displayName.toLowerCase() === accIdLower)
-        ) {
+        if (a.id === accountId || a.accountId === accountId || a.displayName.toLowerCase() === accountId.toLowerCase()) {
           targetAccKey = k;
           account = a;
           break;
@@ -150,13 +140,14 @@ export class AdminService {
 
     if (this.db.pgPool) {
       try {
+        const targetId = account ? account.id : accountId;
         await this.db.pgPool.query(
-          'DELETE FROM storage_buckets WHERE storage_account_id::text = $1 OR storage_account_id IN (SELECT id FROM storage_accounts WHERE id::text = $1 OR account_id = $1)',
-          [account ? account.id : accountId]
+          `DELETE FROM storage_buckets WHERE storage_account_id::text = $1 OR storage_account_id IN (SELECT id FROM storage_accounts WHERE id::text = $1 OR account_id = $1);`,
+          [targetId]
         );
         await this.db.pgPool.query(
-          'DELETE FROM storage_accounts WHERE id::text = $1 OR account_id = $1',
-          [account ? account.id : accountId]
+          `DELETE FROM storage_accounts WHERE id::text = $1 OR account_id = $1;`,
+          [targetId]
         );
       } catch (err: any) {
         console.warn('[POSTGRES] deleteStorageAccount notice:', err.message);
@@ -191,7 +182,7 @@ export class AdminService {
 
       if (this.db.pgPool) {
         this.db.pgPool.query(
-          `UPDATE storage_buckets SET bucket_name = $1, logical_quota_bytes = $2, priority = $3, updated_at = NOW() WHERE id = $4 OR storage_account_id = $5;`,
+          `UPDATE storage_buckets SET bucket_name = $1, logical_quota_bytes = $2, priority = $3, updated_at = NOW() WHERE id::text = $4 OR storage_account_id::text = $5;`,
           [bucketName, quota, existingForAccount.priority, existingForAccount.id, storageAccountId]
         ).catch((err: any) => console.warn('[POSTGRES] update existing bucket notice:', err.message));
       }
@@ -231,7 +222,7 @@ export class AdminService {
       this.db.pgPool.query(
         `INSERT INTO storage_buckets (id, storage_account_id, bucket_name, region, logical_quota_bytes, used_storage_bytes, reserved_storage_bytes, priority, health_status, is_enabled, object_count)
          VALUES ($1, $2, $3, $4, $5, 0, 0, $6, 'HEALTHY', true, 0)
-         ON CONFLICT (id) DO UPDATE SET bucket_name = EXCLUDED.bucket_name;`,
+         ON CONFLICT (id) DO UPDATE SET bucket_name = EXCLUDED.bucket_name, logical_quota_bytes = EXCLUDED.logical_quota_bytes, priority = EXCLUDED.priority, updated_at = NOW();`,
         [id, pgAccountId, bucketName, dto.region || 'auto', quota, newBucket.priority]
       ).catch((err: any) => console.warn('[POSTGRES] addBucket sync notice:', err.message));
     }

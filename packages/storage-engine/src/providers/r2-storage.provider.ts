@@ -37,8 +37,10 @@ export class R2StorageProvider implements IStorageProvider {
       credentials: {
         accessKeyId: config.accessKeyId,
         secretAccessKey: config.secretAccessKey
-      }
-    });
+      },
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED'
+    } as any);
   }
 
   async generatePresignedUploadUrl(
@@ -76,22 +78,65 @@ export class R2StorageProvider implements IStorageProvider {
     contentType: string,
     metadata?: Record<string, string>
   ): Promise<{ etag?: string }> {
+    let finalBody: any = body;
     let contentLength: number | undefined;
-    if (metadata && metadata.contentLength) {
-      contentLength = Number(metadata.contentLength);
-    } else if (Buffer.isBuffer(body)) {
-      contentLength = body.length;
-    } else if (typeof body === 'string') {
-      contentLength = Buffer.byteLength(body);
+
+    if (metadata) {
+      const rawLen = metadata.contentLength || (metadata as any)['content-length'];
+      if (rawLen !== undefined && rawLen !== null && rawLen !== '') {
+        const parsed = Number(rawLen);
+        if (!isNaN(parsed) && parsed >= 0) {
+          contentLength = parsed;
+        }
+      }
+    }
+
+    if (contentLength === undefined) {
+      if (Buffer.isBuffer(body)) {
+        contentLength = body.length;
+      } else if (typeof body === 'string') {
+        contentLength = Buffer.byteLength(body);
+      } else if (body instanceof Uint8Array) {
+        contentLength = body.byteLength;
+      }
+    }
+
+    // If body is a stream and contentLength is still unknown, buffer it so ContentLength is guaranteed
+    if (contentLength === undefined && body && typeof (body as any).pipe === 'function') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of (body as any)) {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+      }
+      finalBody = Buffer.concat(chunks);
+      contentLength = finalBody.length;
+    }
+
+    // Sanitize metadata to avoid invalid S3 header values and remove internal contentLength
+    let sanitizedMetadata: Record<string, string> | undefined = undefined;
+    if (metadata) {
+      const filtered: Record<string, string> = {};
+      for (const [k, v] of Object.entries(metadata)) {
+        if (
+          v !== undefined &&
+          v !== null &&
+          k !== 'contentLength' &&
+          k !== 'content-length'
+        ) {
+          filtered[k] = String(v);
+        }
+      }
+      if (Object.keys(filtered).length > 0) {
+        sanitizedMetadata = filtered;
+      }
     }
 
     const command = new PutObjectCommand({
       Bucket: bucketName,
       Key: objectKey,
-      Body: body as any,
+      Body: finalBody,
       ContentType: contentType,
       ContentLength: contentLength,
-      Metadata: metadata
+      Metadata: sanitizedMetadata
     });
 
     const res = await this.client.send(command);

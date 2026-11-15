@@ -433,7 +433,8 @@ app.post('/api/videos/upload', async (req: Request, res: Response) => {
         originalFilename: rawFilename,
         title,
         ownerId: userId,
-        uploadedAt: new Date().toISOString()
+        uploadedAt: new Date().toISOString(),
+        ...(contentLength > 0 ? { contentLength: String(contentLength) } : {})
       }
     );
 
@@ -592,14 +593,13 @@ app.post('/api/videos/upload-thumbnail', async (req: Request, res: Response) => 
     let thumbBuffer: Buffer;
     let contentType = (req.headers['content-type'] as string) || 'image/jpeg';
 
-    const rawData = req.body?.dataUrl || req.body?.imageData || req.body?.image || (typeof req.body === 'string' ? req.body : null);
-    if (rawData) {
-      const matches = rawData.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (req.body && req.body.dataUrl) {
+      const matches = req.body.dataUrl.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
       if (matches && matches.length === 3) {
         contentType = matches[1];
         thumbBuffer = Buffer.from(matches[2], 'base64');
       } else {
-        thumbBuffer = Buffer.from(rawData, 'base64');
+        thumbBuffer = Buffer.from(req.body.dataUrl, 'base64');
       }
     } else {
       const chunks: Buffer[] = [];
