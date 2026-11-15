@@ -80,7 +80,7 @@ export class AuthService {
     this.db.users.set(newUser.id, newUser);
     const tokens = this.generateTokens(newUser);
 
-    return { user: newUser, tokens };
+    return { user: this.sanitizeUser(newUser), tokens };
   }
 
   public login(emailOrUsername: string, password: string): { user: IUser; tokens: IAuthTokens } {
@@ -105,6 +105,11 @@ export class AuthService {
     }
 
     const tokens = this.generateTokens(foundUser);
-    return { user: foundUser, tokens };
+    return { user: this.sanitizeUser(foundUser), tokens };
+  }
+
+  private sanitizeUser(user: IUser & { passwordHash?: string }): IUser {
+    const { passwordHash, ...cleanUser } = user;
+    return cleanUser as IUser;
   }
 }

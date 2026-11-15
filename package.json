@@ -12,7 +12,8 @@
     "test": "npm run test --if-present --workspaces",
     "test:large-files": "node --test scripts/dist/test-large-files.js",
     "test:smoke": "node --test scripts/dist/production-smoke-test.js",
-    "test:all": "npm run test --if-present --workspaces && npm run test:large-files && npm run test:smoke",
+    "test:evidence": "node scripts/dist/live-evidence-collector.js",
+    "test:all": "npm run test --if-present --workspaces && npm run test:large-files && npm run test:smoke && npm run test:evidence",
     "lint": "npm run lint --workspaces"
   },
   "devDependencies": {
