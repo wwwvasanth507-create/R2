@@ -7,4 +7,5 @@ scripts/dist/
 .env
 .DS_Store
 Thumbs.db
+backups/
 
