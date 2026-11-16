@@ -49,6 +49,54 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const [selectedAudio, setSelectedAudio] = useState('en');
   const [showSettings, setShowSettings] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [aspectMode, setAspectMode] = useState<'fit' | 'fill' | 'zoom' | 'original'>('fit');
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [hudMessage, setHudMessage] = useState<string | null>(null);
+  const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const hudTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const aspectModeLabels: Record<'fit' | 'fill' | 'zoom' | 'original', string> = {
+    fit: 'Fit to Screen (Aspect Ratio)',
+    fill: 'Stretch (100% Full Screen)',
+    zoom: 'Crop to Fill (100% Zoom)',
+    original: '100% Original Size'
+  };
+
+  const cycleAspectMode = () => {
+    const modes: ('fit' | 'fill' | 'zoom' | 'original')[] = ['fit', 'fill', 'zoom', 'original'];
+    const nextIdx = (modes.indexOf(aspectMode) + 1) % modes.length;
+    const nextMode = modes[nextIdx];
+    setAspectMode(nextMode);
+
+    // Show center HUD like MX Player
+    setHudMessage(aspectModeLabels[nextMode]);
+    if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
+    hudTimerRef.current = setTimeout(() => {
+      setHudMessage(null);
+    }, 1500);
+
+    resetHideTimer();
+  };
+
+  // 10-Second Auto-Hide Countdown
+  const resetHideTimer = () => {
+    setControlsVisible(true);
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    if (isPlaying) {
+      hideTimerRef.current = setTimeout(() => {
+        setControlsVisible(false);
+        setShowSettings(false);
+      }, 10000); // Exactly 10 seconds!
+    }
+  };
+
+  useEffect(() => {
+    resetHideTimer();
+    return () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
+    };
+  }, [isPlaying]);
 
   const qualities = ['Auto (Adaptive ABR)', '1080p (FHD)', '720p (HD)', '480p (SD)', '360p'];
 
@@ -158,6 +206,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   return (
     <div
+      onMouseMove={resetHideTimer}
+      onTouchStart={resetHideTimer}
       style={{
         position: 'relative',
         width: '100%',
@@ -169,7 +219,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         boxShadow: '0 20px 40px rgba(0,0,0,0.8)'
       }}
     >
-      {/* Top Header */}
+      {/* Top Header with 10s Inactivity Auto-Hide */}
       <div
         style={{
           position: 'absolute',
@@ -181,7 +231,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           background: 'linear-gradient(to bottom, rgba(0,0,0,0.8), transparent)',
           display: 'flex',
           justifyContent: 'space-between',
-          alignItems: 'center'
+          alignItems: 'center',
+          opacity: controlsVisible ? 1 : 0,
+          transition: 'opacity 0.3s ease',
+          pointerEvents: controlsVisible ? 'auto' : 'none'
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -218,7 +271,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         )}
       </div>
 
-      {/* Video Element */}
+      {/* Video Element with MX Player Style Aspect Ratio (Fit, Stretch 100%, Zoom) */}
       <video
         ref={videoRef}
         src={src}
@@ -230,9 +283,33 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           maxHeight: '540px',
           display: 'block',
           cursor: 'pointer',
-          objectFit: 'contain'
+          objectFit: aspectMode === 'fit' ? 'contain' : aspectMode === 'fill' ? 'fill' : aspectMode === 'zoom' ? 'cover' : 'none'
         }}
       />
+
+      {/* Center HUD Badge for Screen Fit (MX Player style) */}
+      {hudMessage && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            background: 'rgba(0,0,0,0.85)',
+            color: '#fff',
+            padding: '12px 24px',
+            borderRadius: '8px',
+            fontSize: '15px',
+            fontWeight: 700,
+            border: '1px solid rgba(255,255,255,0.2)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+            zIndex: 35,
+            pointerEvents: 'none'
+          }}
+        >
+          📐 {hudMessage}
+        </div>
+      )}
 
       {/* Center Big Play Button Overlay */}
       {!isPlaying && (
@@ -258,7 +335,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         </div>
       )}
 
-      {/* Bottom Controls Bar */}
+      {/* Bottom Controls Bar with 10s Inactivity Auto-Hide */}
       <div
         style={{
           position: 'absolute',
@@ -269,7 +346,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           padding: '12px 20px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '8px'
+          gap: '8px',
+          opacity: controlsVisible ? 1 : 0,
+          transition: 'opacity 0.3s ease',
+          pointerEvents: controlsVisible ? 'auto' : 'none'
         }}
       >
         {/* Progress Timeline */}
@@ -445,9 +525,32 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               )}
             </div>
 
+            {/* MX Player Style Aspect Ratio (Fit, Stretch, Zoom) */}
+            <button
+              onClick={cycleAspectMode}
+              style={{
+                background: 'rgba(255,255,255,0.12)',
+                border: '1px solid rgba(255,255,255,0.25)',
+                color: '#fff',
+                cursor: 'pointer',
+                borderRadius: '4px',
+                padding: '3px 8px',
+                fontSize: '11px',
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
+              }}
+              title="Aspect Ratio (Fit to Screen, Stretch 100%, Zoom to Fill)"
+            >
+              <span>📐</span>
+              <span>{aspectMode === 'fit' ? 'FIT' : aspectMode === 'fill' ? '100% STRETCH' : aspectMode === 'zoom' ? 'ZOOM' : '100%'}</span>
+            </button>
+
             <button
               onClick={toggleFullscreen}
               style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}
+              title="Fullscreen"
             >
               <Maximize size={20} />
             </button>

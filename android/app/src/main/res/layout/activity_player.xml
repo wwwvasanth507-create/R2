@@ -99,7 +99,47 @@
                 android:paddingTop="2dp"
                 android:paddingBottom="2dp"
                 android:visibility="gone" />
+
+            <!-- MX Player Style Screen Fit / Aspect Ratio Toggle -->
+            <ImageView
+                android:id="@+id/btn_aspect_ratio"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@drawable/ic_aspect_ratio"
+                android:padding="6dp"
+                android:layout_marginStart="6dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Screen Fit Mode" />
+
+            <!-- Fullscreen Landscape / Portrait Toggle -->
+            <ImageView
+                android:id="@+id/btn_fullscreen_toggle"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:src="@drawable/ic_fullscreen"
+                android:padding="6dp"
+                android:layout_marginStart="4dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Toggle Fullscreen" />
         </LinearLayout>
+
+        <!-- MX Player Style Center Resize Mode HUD Badge -->
+        <TextView
+            android:id="@+id/tv_resize_hud"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_hud_badge"
+            android:paddingStart="18dp"
+            android:paddingEnd="18dp"
+            android:paddingTop="10dp"
+            android:paddingBottom="10dp"
+            android:textColor="@color/text_white"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:elevation="8dp"
+            android:visibility="gone"
+            tools:text="📐 Fit to Screen" />
 
         <!-- Loading indicator -->
         <ProgressBar
@@ -257,6 +297,37 @@
                             android:layout_marginStart="6dp"
                             android:text="Dolby Bass EQ"
                             android:textColor="@color/text_gray"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <!-- Screen Fit Mode (MX Player Fit to Screen, Stretch 100%, Crop Zoom) -->
+                    <LinearLayout
+                        android:id="@+id/btn_screen_fit"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/bg_pill_toggle_off"
+                        android:clickable="true"
+                        android:focusable="true">
+
+                        <ImageView
+                            android:layout_width="16dp"
+                            android:layout_height="16dp"
+                            android:src="@drawable/ic_aspect_ratio"
+                            app:tint="@color/text_white" />
+
+                        <TextView
+                            android:id="@+id/tv_screen_fit_label"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:text="Fit to Screen"
+                            android:textColor="@color/text_white"
                             android:textSize="12sp"
                             android:textStyle="bold" />
                     </LinearLayout>

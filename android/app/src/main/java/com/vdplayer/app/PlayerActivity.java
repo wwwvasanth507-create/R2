@@ -1,6 +1,7 @@
 package com.vdplayer.app;
 
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.ColorMatrix;
@@ -10,6 +11,8 @@ import android.media.audiofx.BassBoost;
 import android.media.audiofx.Equalizer;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -26,6 +29,9 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.constraintlayout.widget.ConstraintLayout;
+import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.core.widget.NestedScrollView;
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
@@ -34,6 +40,7 @@ import androidx.media3.common.Player;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -59,6 +66,9 @@ public class PlayerActivity extends AppCompatActivity {
     private TextView playerOverlayTitle;
     private TextView badgeActive24k;
     private TextView badgeActiveDolby;
+    private ImageView btnAspectRatio;
+    private ImageView btnFullscreenToggle;
+    private TextView tvResizeHud;
     private ProgressBar playerLoading;
     private NestedScrollView detailsScrollView;
 
@@ -70,6 +80,8 @@ public class PlayerActivity extends AppCompatActivity {
     private LinearLayout btnToggleDolby;
     private ImageView iconDolbyEq;
     private TextView tvDolbyLabel;
+    private LinearLayout btnScreenFit;
+    private TextView tvScreenFitLabel;
     private LinearLayout btnPlaybackSpeed;
     private TextView tvSpeedLabel;
 
@@ -107,6 +119,46 @@ public class PlayerActivity extends AppCompatActivity {
     private final float[] speedOptions = {1.0f, 1.25f, 1.5f, 2.0f, 0.75f};
     private int currentSpeedIndex = 0;
 
+    // MX Player Style Resize / Aspect Ratio Modes
+    // 0: RESIZE_MODE_FIT (Fit to Screen - full picture visible with pillarbox/letterbox)
+    // 3: RESIZE_MODE_FILL (Stretch / 100% Full Screen - no black bars edge-to-edge)
+    // 4: RESIZE_MODE_ZOOM (Crop / Zoom to Fill - full screen maintaining aspect ratio)
+    // 1: RESIZE_MODE_FIXED_WIDTH (100% Original 1:1)
+    private static final int[] RESIZE_MODES = {
+            AspectRatioFrameLayout.RESIZE_MODE_FIT,
+            AspectRatioFrameLayout.RESIZE_MODE_FILL,
+            AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
+            AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+    };
+    private static final String[] RESIZE_MODE_LABELS = {
+            "Fit to Screen",
+            "Stretch (100% Full)",
+            "Crop to Fill (Zoom)",
+            "100% Original"
+    };
+    private static final String[] RESIZE_MODE_ICONS = {
+            "📐 Fit to Screen",
+            "↔️ Stretch (100% Full Screen)",
+            "🔍 Crop to Fill (100% Zoom)",
+            "1️⃣ 100% Original (1:1)"
+    };
+    private int currentResizeModeIndex = 0;
+
+    // 10-Second Auto-Hide System for Top Bar & Details
+    private final Handler autoHideHandler = new Handler(Looper.getMainLooper());
+    private final Runnable autoHideRunnable = this::hideTopOverlay;
+    private static final long AUTO_HIDE_DELAY_MS = 10000; // Exactly 10 seconds!
+
+    // HUD Badge Handler
+    private final Handler hudHandler = new Handler(Looper.getMainLooper());
+    private final Runnable hideHudRunnable = () -> {
+        if (tvResizeHud != null) {
+            tvResizeHud.animate().alpha(0f).setDuration(250).withEndAction(() -> {
+                tvResizeHud.setVisibility(View.GONE);
+            }).start();
+        }
+    };
+
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -141,6 +193,9 @@ public class PlayerActivity extends AppCompatActivity {
         playerOverlayTitle = findViewById(R.id.player_overlay_title);
         badgeActive24k = findViewById(R.id.badge_active_24k);
         badgeActiveDolby = findViewById(R.id.badge_active_dolby);
+        btnAspectRatio = findViewById(R.id.btn_aspect_ratio);
+        btnFullscreenToggle = findViewById(R.id.btn_fullscreen_toggle);
+        tvResizeHud = findViewById(R.id.tv_resize_hud);
         playerLoading = findViewById(R.id.player_loading);
         detailsScrollView = findViewById(R.id.details_scroll_view);
 
@@ -152,6 +207,8 @@ public class PlayerActivity extends AppCompatActivity {
         btnToggleDolby = findViewById(R.id.btn_toggle_dolby);
         iconDolbyEq = findViewById(R.id.icon_dolby_eq);
         tvDolbyLabel = findViewById(R.id.tv_dolby_label);
+        btnScreenFit = findViewById(R.id.btn_screen_fit);
+        tvScreenFitLabel = findViewById(R.id.tv_screen_fit_label);
         btnPlaybackSpeed = findViewById(R.id.btn_playback_speed);
         tvSpeedLabel = findViewById(R.id.tv_speed_label);
 
@@ -171,7 +228,27 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void setupListeners() {
-        btnBack.setOnClickListener(v -> finish());
+        btnBack.setOnClickListener(v -> {
+            if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                // In landscape fullscreen, pressing back restores portrait first
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+            } else {
+                finish();
+            }
+        });
+
+        // MX Player Style Aspect Ratio / Screen Fit Cycle
+        if (btnAspectRatio != null) {
+            btnAspectRatio.setOnClickListener(v -> cycleResizeMode());
+        }
+        if (btnScreenFit != null) {
+            btnScreenFit.setOnClickListener(v -> cycleResizeMode());
+        }
+
+        // Fullscreen Landscape / Portrait Toggle
+        if (btnFullscreenToggle != null) {
+            btnFullscreenToggle.setOnClickListener(v -> toggleFullscreenOrientation());
+        }
 
         // 24K Cinema Vivid Toggle
         btnToggle24k.setOnClickListener(v -> toggle24kVividMode());
@@ -219,14 +296,16 @@ public class PlayerActivity extends AppCompatActivity {
                 btnSubscribe.setBackgroundColor(Color.parseColor("#E50914"));
             }
         });
+
+        // Tap screen to show/hide top bar & reset 10-second timer
+        playerView.setOnClickListener(v -> toggleTopOverlay());
+        playerContainer.setOnClickListener(v -> toggleTopOverlay());
     }
 
     private void setupRelatedRecyclerView() {
         relatedAdapter = new VideoGridAdapter(this, video -> {
-            // Switch video in player smoothly
             loadVideoData(video);
             playVideo(video);
-            // Scroll to top of details
             detailsScrollView.smoothScrollTo(0, 0);
         });
         rvRelatedVideos.setLayoutManager(new LinearLayoutManager(this));
@@ -248,6 +327,20 @@ public class PlayerActivity extends AppCompatActivity {
                 .build();
 
         playerView.setPlayer(player);
+        playerView.setResizeMode(RESIZE_MODES[currentResizeModeIndex]); // Default Fit to Screen
+
+        // Configure 10-Second Auto-Hide Timeout on Controller
+        playerView.setControllerShowTimeoutMs((int) AUTO_HIDE_DELAY_MS);
+        playerView.setControllerVisibilityListener(new PlayerView.ControllerVisibilityListener() {
+            @Override
+            public void onVisibilityChanged(int visibility) {
+                if (visibility == View.VISIBLE) {
+                    showTopOverlay();
+                } else {
+                    hideTopOverlay();
+                }
+            }
+        });
 
         player.addListener(new Player.Listener() {
             @Override
@@ -259,10 +352,11 @@ public class PlayerActivity extends AppCompatActivity {
                 }
 
                 if (playbackState == Player.STATE_READY) {
-                    // Try to attach audio effects once player is initialized and active
                     if (isDolbyAudioEnabled && bassBoost == null) {
                         applyDolbyAudioEffects(true);
                     }
+                    // Start 10-second auto-hide timer once playback is active
+                    scheduleAutoHide();
                 }
             }
 
@@ -306,6 +400,8 @@ public class PlayerActivity extends AppCompatActivity {
         player.setMediaItem(mediaItem);
         player.prepare();
         player.play();
+
+        scheduleAutoHide();
     }
 
     private void fetchRelatedVideos() {
@@ -315,7 +411,6 @@ public class PlayerActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     relatedList.clear();
                     for (Video v : videos) {
-                        // Filter out currently playing video
                         if (currentVideo == null || !v.getId().equals(currentVideo.getId())) {
                             relatedList.add(v);
                         }
@@ -326,14 +421,102 @@ public class PlayerActivity extends AppCompatActivity {
 
             @Override
             public void onError(String errorMessage) {
-                // Silently handle related fetch fail
+                // Silently handle
             }
         });
     }
 
     /**
+     * Cycles through MX Player style Resize Modes:
+     * 1. Fit to Screen
+     * 2. Stretch (100% Full Screen - no black bars)
+     * 3. Crop to Fill (100% Zoom)
+     * 4. 100% Original
+     */
+    private void cycleResizeMode() {
+        currentResizeModeIndex = (currentResizeModeIndex + 1) % RESIZE_MODES.length;
+        int mode = RESIZE_MODES[currentResizeModeIndex];
+        String label = RESIZE_MODE_LABELS[currentResizeModeIndex];
+        String hudText = RESIZE_MODE_ICONS[currentResizeModeIndex];
+
+        playerView.setResizeMode(mode);
+        if (tvScreenFitLabel != null) {
+            tvScreenFitLabel.setText(label);
+        }
+
+        showResizeHud(hudText);
+        Toast.makeText(this, "Screen Fit: " + label, Toast.LENGTH_SHORT).show();
+
+        // Reset 10-second timer on interaction
+        scheduleAutoHide();
+    }
+
+    private void showResizeHud(String text) {
+        if (tvResizeHud == null) return;
+        tvResizeHud.setText(text);
+        tvResizeHud.setAlpha(0f);
+        tvResizeHud.setVisibility(View.VISIBLE);
+        tvResizeHud.animate().alpha(1f).setDuration(150).start();
+
+        hudHandler.removeCallbacks(hideHudRunnable);
+        hudHandler.postDelayed(hideHudRunnable, 1600);
+    }
+
+    /**
+     * Toggles Fullscreen between Landscape and Portrait orientation.
+     */
+    private void toggleFullscreenOrientation() {
+        int currentOrientation = getResources().getConfiguration().orientation;
+        if (currentOrientation == Configuration.ORIENTATION_LANDSCAPE) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        } else {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        }
+    }
+
+    /**
+     * 10-Second Auto-Hide Management
+     */
+    private void scheduleAutoHide() {
+        autoHideHandler.removeCallbacks(autoHideRunnable);
+        autoHideHandler.postDelayed(autoHideRunnable, AUTO_HIDE_DELAY_MS);
+    }
+
+    private void cancelAutoHide() {
+        autoHideHandler.removeCallbacks(autoHideRunnable);
+    }
+
+    private void showTopOverlay() {
+        if (playerTopBar == null) return;
+        playerTopBar.animate().cancel();
+        playerTopBar.setAlpha(0f);
+        playerTopBar.setVisibility(View.VISIBLE);
+        playerTopBar.animate().alpha(1f).setDuration(250).start();
+
+        // Automatically start the 10-second auto-hide countdown
+        scheduleAutoHide();
+    }
+
+    private void hideTopOverlay() {
+        if (playerTopBar == null || playerTopBar.getVisibility() != View.VISIBLE) return;
+        playerTopBar.animate().cancel();
+        playerTopBar.animate().alpha(0f).setDuration(350).withEndAction(() -> {
+            playerTopBar.setVisibility(View.GONE);
+        }).start();
+    }
+
+    private void toggleTopOverlay() {
+        if (playerTopBar == null) return;
+        if (playerTopBar.getVisibility() == View.VISIBLE) {
+            hideTopOverlay();
+            cancelAutoHide();
+        } else {
+            showTopOverlay();
+        }
+    }
+
+    /**
      * Toggles the "24K Cinema Vivid" color grade enhancement.
-     * Uses ColorMatrix hardware filter on the TextureView surface for vivid contrast & punchy color.
      */
     private void toggle24kVividMode() {
         is24kVividEnabled = !is24kVividEnabled;
@@ -344,7 +527,6 @@ public class PlayerActivity extends AppCompatActivity {
             icon24kSparkle.setColorFilter(Color.parseColor("#000000"));
             badgeActive24k.setVisibility(View.VISIBLE);
 
-            // Apply 24K Vivid Grade: Boost Saturation (+30%) and Contrast (+15%)
             applyVividFilter(true);
             Toast.makeText(this, "✨ 24K Cinema Vivid Mode: ON (Master Grade Color)", Toast.LENGTH_SHORT).show();
         } else {
@@ -353,10 +535,10 @@ public class PlayerActivity extends AppCompatActivity {
             icon24kSparkle.setColorFilter(Color.parseColor("#9CA3AF"));
             badgeActive24k.setVisibility(View.GONE);
 
-            // Reset video surface filter
             applyVividFilter(false);
             Toast.makeText(this, "24K Vivid Mode: OFF (Standard Natural Color)", Toast.LENGTH_SHORT).show();
         }
+        scheduleAutoHide();
     }
 
     private void applyVividFilter(boolean enable) {
@@ -368,8 +550,7 @@ public class PlayerActivity extends AppCompatActivity {
                     ColorMatrix satMatrix = new ColorMatrix();
                     satMatrix.setSaturation(1.30f); // +30% Vivid Saturation
 
-                    // Contrast boost (+15%)
-                    float scale = 1.15f;
+                    float scale = 1.15f; // +15% Contrast
                     float translate = (-0.5f * scale + 0.5f) * 255.0f;
                     ColorMatrix contrastMatrix = new ColorMatrix(new float[]{
                             scale, 0, 0, 0, translate,
@@ -388,11 +569,9 @@ public class PlayerActivity extends AppCompatActivity {
                     textureView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
                 }
             } else {
-                // Fallback subtle overlay
                 vividOverlay.setVisibility(enable ? View.VISIBLE : View.GONE);
             }
         } catch (Throwable t) {
-            // Graceful fallback
             vividOverlay.setVisibility(enable ? View.VISIBLE : View.GONE);
         }
     }
@@ -420,6 +599,7 @@ public class PlayerActivity extends AppCompatActivity {
             applyDolbyAudioEffects(false);
             Toast.makeText(this, "Dolby Audio: OFF (Flat EQ)", Toast.LENGTH_SHORT).show();
         }
+        scheduleAutoHide();
     }
 
     private void applyDolbyAudioEffects(boolean enable) {
@@ -431,27 +611,24 @@ public class PlayerActivity extends AppCompatActivity {
             }
 
             if (enable) {
-                // Initialize BassBoost
                 if (bassBoost == null) {
                     bassBoost = new BassBoost(0, audioSessionId);
                 }
                 if (bassBoost.getStrengthSupported()) {
-                    bassBoost.setStrength((short) 1000); // Maximum deep cinematic sub-bass
+                    bassBoost.setStrength((short) 1000);
                 }
                 bassBoost.setEnabled(true);
 
-                // Initialize Equalizer for Dolby Soundstage curve
                 if (equalizer == null) {
                     equalizer = new Equalizer(0, audioSessionId);
                 }
                 equalizer.setEnabled(true);
                 short bands = equalizer.getNumberOfBands();
                 if (bands > 0) {
-                    // Boost deep bass (band 0) and high clarity frequencies (top band)
                     short minLevel = equalizer.getBandLevelRange()[0];
                     short maxLevel = equalizer.getBandLevelRange()[1];
-                    short bassGain = (short) Math.min(maxLevel, 800); // +8dB bass
-                    short trebleGain = (short) Math.min(maxLevel, 400); // +4dB treble
+                    short bassGain = (short) Math.min(maxLevel, 800);
+                    short trebleGain = (short) Math.min(maxLevel, 400);
 
                     equalizer.setBandLevel((short) 0, bassGain);
                     if (bands > 1) {
@@ -467,7 +644,7 @@ public class PlayerActivity extends AppCompatActivity {
                 }
             }
         } catch (Throwable t) {
-            // AudioFx may not be supported on all emulator profiles
+            // Ignored
         }
     }
 
@@ -481,6 +658,7 @@ public class PlayerActivity extends AppCompatActivity {
 
         tvSpeedLabel.setText("⚡ " + speed + "x Speed");
         Toast.makeText(this, "Playback speed: " + speed + "x", Toast.LENGTH_SHORT).show();
+        scheduleAutoHide();
     }
 
     private void shareCurrentVideo() {
@@ -500,31 +678,63 @@ public class PlayerActivity extends AppCompatActivity {
     public void onConfigurationChanged(@NonNull Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
 
-        // Adjust layout for landscape (true fullscreen cinema mode) vs portrait
         if (newConfig.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-            // Hide details, make player match_parent
-            detailsScrollView.setVisibility(View.GONE);
-            ConstraintLayout.LayoutParams params = (ConstraintLayout.LayoutParams) playerContainer.getLayoutParams();
-            params.height = ViewGroup.LayoutParams.MATCH_PARENT;
-            params.dimensionRatio = null;
-            playerContainer.setLayoutParams(params);
-
-            // Fullscreen system bars hide
-            getWindow().getDecorView().setSystemUiVisibility(
-                    View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            );
+            enterFullscreenMode();
         } else {
-            // Restore portrait
-            detailsScrollView.setVisibility(View.VISIBLE);
-            ConstraintLayout.LayoutParams params = (ConstraintLayout.LayoutParams) playerContainer.getLayoutParams();
-            params.height = 0;
-            params.dimensionRatio = "16:9";
-            playerContainer.setLayoutParams(params);
-
-            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+            exitFullscreenMode();
         }
+    }
+
+    private void enterFullscreenMode() {
+        detailsScrollView.setVisibility(View.GONE);
+        ConstraintLayout.LayoutParams params = (ConstraintLayout.LayoutParams) playerContainer.getLayoutParams();
+        params.height = ViewGroup.LayoutParams.MATCH_PARENT;
+        params.dimensionRatio = null;
+        playerContainer.setLayoutParams(params);
+
+        if (btnFullscreenToggle != null) {
+            btnFullscreenToggle.setImageResource(R.drawable.ic_fullscreen_exit);
+        }
+
+        // Hide system bars completely (Immersive Sticky)
+        WindowInsetsControllerCompat insetsController = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        if (insetsController != null) {
+            insetsController.hide(WindowInsetsCompat.Type.systemBars());
+            insetsController.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        }
+
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+        );
+
+        // Schedule auto-hide of top title bar in 10 seconds!
+        showTopOverlay();
+    }
+
+    private void exitFullscreenMode() {
+        detailsScrollView.setVisibility(View.VISIBLE);
+        ConstraintLayout.LayoutParams params = (ConstraintLayout.LayoutParams) playerContainer.getLayoutParams();
+        params.height = 0;
+        params.dimensionRatio = "16:9";
+        playerContainer.setLayoutParams(params);
+
+        if (btnFullscreenToggle != null) {
+            btnFullscreenToggle.setImageResource(R.drawable.ic_fullscreen);
+        }
+
+        WindowInsetsControllerCompat insetsController = WindowCompat.getInsetsController(getWindow(), getWindow().getDecorView());
+        if (insetsController != null) {
+            insetsController.show(WindowInsetsCompat.Type.systemBars());
+        }
+
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+
+        showTopOverlay();
     }
 
     @Override
@@ -533,6 +743,7 @@ public class PlayerActivity extends AppCompatActivity {
         if (player != null) {
             player.pause();
         }
+        cancelAutoHide();
     }
 
     @Override
@@ -541,17 +752,18 @@ public class PlayerActivity extends AppCompatActivity {
         if (player != null) {
             player.pause();
         }
+        cancelAutoHide();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        cancelAutoHide();
         if (player != null) {
             player.release();
             player = null;
         }
 
-        // Release audio effects
         if (bassBoost != null) {
             bassBoost.release();
             bassBoost = null;
