@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary_dark">#08090d</color>
-    <color name="accent_red">#e50914</color>
-    <color name="surface_dark">#12151e</color>
+    <color name="primary_dark">#08090D</color>
+    <color name="surface_dark">#12151E</color>
+    <color name="card_dark">#181B26</color>
+    <color name="card_border">#262B3A</color>
+    <color name="accent_red">#E50914</color>
+    <color name="accent_red_dark">#B20710</color>
+    <color name="text_white">#FFFFFF</color>
+    <color name="text_gray">#9CA3AF</color>
+    <color name="text_muted">#64748B</color>
+    <color name="badge_24k">#FACC15</color>
+    <color name="badge_24k_bg">#332A00</color>
+    <color name="badge_dolby">#60A5FA</color>
+    <color name="badge_dolby_bg">#102A45</color>
+    <color name="badge_green">#22C55E</color>
+    <color name="divider_color">#1E2330</color>
 </resources>

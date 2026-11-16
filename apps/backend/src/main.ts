@@ -1266,6 +1266,18 @@ app.post('/api/videos/chunked/complete', async (req: Request, res: Response) => 
   }
 });
 
+// --- Video Streaming & Media Endpoints ---
+app.get('/api/videos', (req: Request, res: Response) => {
+  const { search, tag } = req.query;
+  res.json(youtubeService.getVideos(search as string, tag as string));
+});
+
+app.get('/api/videos/:id', (req: Request, res: Response) => {
+  const video = youtubeService.getVideoById(req.params.id);
+  if (!video) return res.status(404).json({ error: 'Video not found' });
+  res.json(video);
+});
+
 // --- YouTube Endpoints ---
 app.get('/api/youtube/videos', (req: Request, res: Response) => {
   const { search, tag } = req.query;
