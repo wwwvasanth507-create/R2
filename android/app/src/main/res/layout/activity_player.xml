@@ -427,6 +427,35 @@
                         android:textSize="11sp" />
                 </LinearLayout>
 
+                <!-- Offline Download (Encrypted App-Private Storage) -->
+                <LinearLayout
+                    android:id="@+id/btn_action_download"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:gravity="center"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:background="?attr/selectableItemBackground">
+
+                    <ImageView
+                        android:id="@+id/iv_download_icon"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp"
+                        android:src="@drawable/ic_download"
+                        app:tint="@color/text_white" />
+
+                    <TextView
+                        android:id="@+id/tv_download_text"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="Download"
+                        android:textColor="@color/text_gray"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
                 <!-- Share -->
                 <LinearLayout
                     android:id="@+id/btn_action_share"

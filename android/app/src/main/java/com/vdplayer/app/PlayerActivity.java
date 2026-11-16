@@ -27,6 +27,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.constraintlayout.widget.ConstraintLayout;
 import androidx.core.view.WindowCompat;
@@ -38,6 +39,7 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackParameters;
 import androidx.media3.common.Player;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.AspectRatioFrameLayout;
@@ -49,7 +51,9 @@ import com.vdplayer.app.adapter.VideoGridAdapter;
 import com.vdplayer.app.model.Video;
 import com.vdplayer.app.network.ApiClient;
 import com.vdplayer.app.network.ImageLoader;
+import com.vdplayer.app.offline.OfflineDownloadManager;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -89,7 +93,11 @@ public class PlayerActivity extends AppCompatActivity {
     private ImageView ivLikeIcon;
     private LinearLayout btnActionWatchlist;
     private ImageView ivWatchlistIcon;
+    private LinearLayout btnActionDownload;
+    private ImageView ivDownloadIcon;
+    private TextView tvDownloadText;
     private LinearLayout btnActionShare;
+    private boolean isDownloading = false;
 
     private ImageView ivChannelAvatar;
     private TextView tvChannelName;
@@ -216,6 +224,9 @@ public class PlayerActivity extends AppCompatActivity {
         ivLikeIcon = findViewById(R.id.iv_like_icon);
         btnActionWatchlist = findViewById(R.id.btn_action_watchlist);
         ivWatchlistIcon = findViewById(R.id.iv_watchlist_icon);
+        btnActionDownload = findViewById(R.id.btn_action_download);
+        ivDownloadIcon = findViewById(R.id.iv_download_icon);
+        tvDownloadText = findViewById(R.id.tv_download_text);
         btnActionShare = findViewById(R.id.btn_action_share);
 
         ivChannelAvatar = findViewById(R.id.iv_channel_avatar);
@@ -281,6 +292,11 @@ public class PlayerActivity extends AppCompatActivity {
             }
         });
 
+        // Offline Download Button
+        if (btnActionDownload != null) {
+            btnActionDownload.setOnClickListener(v -> handleDownloadClick());
+        }
+
         // Share Button
         btnActionShare.setOnClickListener(v -> shareCurrentVideo());
 
@@ -313,10 +329,20 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void initializeExoPlayer() {
+        DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                        1000,   // minBufferMs: 1.0s buffer threshold
+                        50000,  // maxBufferMs: 50s cache
+                        500,    // bufferForPlaybackMs: Instant startup in 500ms (0.5s)
+                        1000    // bufferForPlaybackAfterRebufferMs: 1s after rebuffer
+                )
+                .setBackBuffer(25000, true) // 25s back-buffer for instant rewind
+                .build();
+
         DefaultHttpDataSource.Factory httpDataSourceFactory = new DefaultHttpDataSource.Factory()
                 .setUserAgent("VDPlayer-Android/1.0")
-                .setConnectTimeoutMs(15000)
-                .setReadTimeoutMs(25000)
+                .setConnectTimeoutMs(8000)
+                .setReadTimeoutMs(15000)
                 .setAllowCrossProtocolRedirects(true);
 
         DefaultMediaSourceFactory mediaSourceFactory = new DefaultMediaSourceFactory(this)
@@ -324,6 +350,7 @@ public class PlayerActivity extends AppCompatActivity {
 
         player = new ExoPlayer.Builder(this)
                 .setMediaSourceFactory(mediaSourceFactory)
+                .setLoadControl(loadControl)
                 .build();
 
         playerView.setPlayer(player);
@@ -385,23 +412,116 @@ public class PlayerActivity extends AppCompatActivity {
             ImageLoader.getInstance().load(video.getFullThumbnailUrl(activeBase), ivChannelAvatar, 8);
         }
 
+        updateDownloadButtonState();
         playVideo(video);
     }
 
     private void playVideo(Video video) {
-        String activeBase = ApiClient.getInstance().getActiveBaseUrl();
-        String streamUrl = video.getFullStreamUrl(activeBase);
-        if (streamUrl == null || streamUrl.isEmpty()) {
-            Toast.makeText(this, "Invalid video stream URL", Toast.LENGTH_SHORT).show();
-            return;
+        boolean isOffline = OfflineDownloadManager.getInstance(this).isVideoDownloaded(video.getId());
+        MediaItem mediaItem;
+
+        if (isOffline) {
+            File offlineFile = OfflineDownloadManager.getInstance(this).getMediaFile(video.getId());
+            mediaItem = MediaItem.fromUri(Uri.fromFile(offlineFile));
+            Toast.makeText(this, "Playing from Secure Offline Vault ⚡", Toast.LENGTH_SHORT).show();
+        } else {
+            String activeBase = ApiClient.getInstance().getActiveBaseUrl();
+            String streamUrl = video.getFullStreamUrl(activeBase);
+            if (streamUrl == null || streamUrl.isEmpty()) {
+                Toast.makeText(this, "Invalid video stream URL", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            mediaItem = MediaItem.fromUri(Uri.parse(streamUrl));
         }
 
-        MediaItem mediaItem = MediaItem.fromUri(Uri.parse(streamUrl));
         player.setMediaItem(mediaItem);
         player.prepare();
         player.play();
 
         scheduleAutoHide();
+    }
+
+    private void updateDownloadButtonState() {
+        if (currentVideo == null || ivDownloadIcon == null || tvDownloadText == null) return;
+        boolean isDownloaded = OfflineDownloadManager.getInstance(this).isVideoDownloaded(currentVideo.getId());
+        if (isDownloaded) {
+            ivDownloadIcon.setImageResource(R.drawable.ic_nav_downloads);
+            ivDownloadIcon.setColorFilter(Color.parseColor("#22C55E"));
+            tvDownloadText.setText("Saved");
+            tvDownloadText.setTextColor(Color.parseColor("#22C55E"));
+        } else if (isDownloading) {
+            ivDownloadIcon.setImageResource(R.drawable.ic_download);
+            ivDownloadIcon.setColorFilter(Color.parseColor("#E50914"));
+            tvDownloadText.setTextColor(Color.parseColor("#E50914"));
+        } else {
+            ivDownloadIcon.setImageResource(R.drawable.ic_download);
+            ivDownloadIcon.setColorFilter(Color.parseColor("#FFFFFF"));
+            tvDownloadText.setText("Download");
+            tvDownloadText.setTextColor(Color.parseColor("#9CA3AF"));
+        }
+    }
+
+    private void handleDownloadClick() {
+        if (currentVideo == null) return;
+        OfflineDownloadManager dm = OfflineDownloadManager.getInstance(this);
+
+        if (dm.isVideoDownloaded(currentVideo.getId())) {
+            new AlertDialog.Builder(this, androidx.appcompat.R.style.Theme_AppCompat_Dialog_Alert)
+                    .setTitle(currentVideo.getTitle())
+                    .setMessage("This movie is safely stored in your secure encrypted offline vault. Only playable inside VD Player.")
+                    .setPositiveButton("Play Offline", (dialog, which) -> {
+                        playVideo(currentVideo);
+                    })
+                    .setNegativeButton("Delete Download", (dialog, which) -> {
+                        boolean deleted = dm.deleteDownloadedVideo(currentVideo.getId());
+                        if (deleted) {
+                            Toast.makeText(this, "Movie removed from offline vault", Toast.LENGTH_SHORT).show();
+                            updateDownloadButtonState();
+                        }
+                    })
+                    .setNeutralButton("Cancel", null)
+                    .show();
+            return;
+        }
+
+        if (isDownloading) {
+            Toast.makeText(this, "Download already in progress...", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        isDownloading = true;
+        tvDownloadText.setText("Starting...");
+        tvDownloadText.setTextColor(Color.parseColor("#E50914"));
+        Toast.makeText(this, "Downloading to private vault... (Isolated from phone storage)", Toast.LENGTH_SHORT).show();
+
+        dm.downloadVideo(currentVideo, new OfflineDownloadManager.DownloadListener() {
+            @Override
+            public void onProgress(int progressPercent, long bytesDownloaded, long totalBytes) {
+                runOnUiThread(() -> {
+                    if (tvDownloadText != null) {
+                        tvDownloadText.setText(progressPercent + "%");
+                    }
+                });
+            }
+
+            @Override
+            public void onComplete(Video video) {
+                runOnUiThread(() -> {
+                    isDownloading = false;
+                    updateDownloadButtonState();
+                    Toast.makeText(PlayerActivity.this, "✓ Download Complete! Watch offline anytime.", Toast.LENGTH_LONG).show();
+                });
+            }
+
+            @Override
+            public void onError(String errorMessage) {
+                runOnUiThread(() -> {
+                    isDownloading = false;
+                    updateDownloadButtonState();
+                    Toast.makeText(PlayerActivity.this, "Download failed: " + errorMessage, Toast.LENGTH_LONG).show();
+                });
+            }
+        });
     }
 
     private void fetchRelatedVideos() {

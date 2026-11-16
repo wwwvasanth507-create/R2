@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.cardview.widget.CardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginStart="12dp"
+    android:layout_marginEnd="12dp"
+    android:layout_marginTop="6dp"
+    android:layout_marginBottom="6dp"
+    app:cardBackgroundColor="@color/card_dark"
+    app:cardCornerRadius="10dp"
+    app:cardElevation="2dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="10dp"
+        android:gravity="center_vertical">
+
+        <!-- Thumbnail Container -->
+        <FrameLayout
+            android:layout_width="120dp"
+            android:layout_height="70dp">
+
+            <ImageView
+                android:id="@+id/iv_offline_thumb"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scaleType="centerCrop"
+                android:src="@drawable/bg_pill_toggle_off" />
+
+            <!-- Duration Badge -->
+            <TextView
+                android:id="@+id/tv_offline_duration"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|end"
+                android:layout_margin="4dp"
+                android:background="@drawable/bg_duration_badge"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:textColor="@color/text_white"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                tools:text="12:45" />
+
+            <!-- Offline Badge -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|start"
+                android:layout_margin="4dp"
+                android:background="#99000000"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:text="OFFLINE"
+                android:textColor="@color/badge_green"
+                android:textSize="8sp"
+                android:textStyle="bold" />
+        </FrameLayout>
+
+        <!-- Video Info -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="12dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tv_offline_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:textColor="@color/text_white"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                tools:text="Ramayana 2026 HQ PreDVD 1080p HD" />
+
+            <TextView
+                android:id="@+id/tv_offline_meta"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="@color/text_gray"
+                android:textSize="11sp"
+                tools:text="Saved in Vault • 240 MB" />
+        </LinearLayout>
+
+        <!-- Action: Play Button -->
+        <ImageView
+            android:id="@+id/btn_offline_play"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:padding="8dp"
+            android:src="@drawable/ic_play_arrow"
+            app:tint="@color/accent_red"
+            android:contentDescription="Play Offline" />
+
+        <!-- Action: Delete Button -->
+        <ImageView
+            android:id="@+id/btn_offline_delete"
+            android:layout_width="38dp"
+            android:layout_height="38dp"
+            android:layout_marginStart="4dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:padding="8dp"
+            android:src="@drawable/ic_delete"
+            app:tint="@color/text_muted"
+            android:contentDescription="Delete Offline" />
+
+    </LinearLayout>
+</androidx.cardview.widget.CardView>

@@ -35,9 +35,9 @@ public class ApiClient {
 
     private ApiClient() {
         this.httpClient = new OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(20, TimeUnit.SECONDS)
-                .writeTimeout(20, TimeUnit.SECONDS)
+                .connectTimeout(8, TimeUnit.SECONDS)
+                .readTimeout(15, TimeUnit.SECONDS)
+                .writeTimeout(15, TimeUnit.SECONDS)
                 .retryOnConnectionFailure(true)
                 .build();
         this.mainHandler = new Handler(Looper.getMainLooper());
@@ -136,7 +136,7 @@ public class ApiClient {
         });
     }
 
-    private List<Video> parseVideosJson(String json) throws Exception {
+    public List<Video> parseVideosJson(String json) throws Exception {
         List<Video> list = new ArrayList<>();
         JSONArray array = new JSONArray(json);
         for (int i = 0; i < array.length(); i++) {
