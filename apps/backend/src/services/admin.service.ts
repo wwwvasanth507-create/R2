@@ -166,6 +166,8 @@ export class AdminService {
 
   // --- Bucket Management ---
   public async getBucketsAsync(): Promise<IStorageBucket[]> {
+    const currentDest = this.storageManager.getCurrentUploadDestination();
+
     for (const bkt of this.db.storageBuckets.values()) {
       // 1. Calculate live sum from file chunks
       const chunks = Array.from(this.db.fileChunks.values()).filter(
@@ -174,8 +176,8 @@ export class AdminService {
       const chunkBytes = chunks.reduce((acc, c) => acc + (c.chunkSizeBytes || 0), 0);
       const chunkCount = chunks.length;
 
-      let liveBytes = chunkBytes;
-      let liveCount = chunkCount;
+      let liveBytes = Math.max(bkt.usedStorageBytes || 0, chunkBytes);
+      let liveCount = Math.max(bkt.objectCount || 0, chunkCount);
 
       // 2. Query Cloudflare R2 provider directly for live cloud numbers
       try {
@@ -191,52 +193,99 @@ export class AdminService {
         console.warn(`[STORAGE LIVE QUERY] Notice for bucket ${bkt.bucketName}:`, err.message);
       }
 
-      if (liveBytes > 0 || liveCount > 0) {
-        bkt.usedStorageBytes = liveBytes;
-        bkt.objectCount = liveCount;
-        bkt.availableStorageBytes = Math.max(0, bkt.logicalQuotaBytes - liveBytes);
-        await this.db.saveBucketToPostgres(bkt);
+      bkt.logicalQuotaBytes = bkt.logicalQuotaBytes || DEFAULT_LOGICAL_QUOTA_BYTES;
+      bkt.usedStorageBytes = liveBytes;
+      bkt.objectCount = liveCount;
+      const consumed = liveBytes + (bkt.reservedStorageBytes || 0);
+      bkt.availableStorageBytes = Math.max(0, bkt.logicalQuotaBytes - consumed);
+
+      if (consumed >= bkt.logicalQuotaBytes) {
+        bkt.healthStatus = BucketHealthStatus.EXHAUSTED_100;
+      } else if (consumed / bkt.logicalQuotaBytes >= 0.85) {
+        bkt.healthStatus = BucketHealthStatus.HIGH_USAGE_85;
+      } else if (consumed / bkt.logicalQuotaBytes >= 0.70) {
+        bkt.healthStatus = BucketHealthStatus.WARNING_70;
+      } else {
+        bkt.healthStatus = BucketHealthStatus.HEALTHY;
       }
+
+      await this.db.saveBucketToPostgres(bkt);
     }
 
-    return Array.from(this.db.storageBuckets.values()).sort((a, b) => a.priority - b.priority);
+    const currentTarget = this.storageManager.getCurrentUploadDestination();
+
+    return Array.from(this.db.storageBuckets.values())
+      .map((b) => {
+        const quota = b.logicalQuotaBytes || DEFAULT_LOGICAL_QUOTA_BYTES;
+        const used = b.usedStorageBytes || 0;
+        const avail = Math.max(0, quota - (used + (b.reservedStorageBytes || 0)));
+        const usagePercent = Math.min(100, Number(((used / quota) * 100).toFixed(1)));
+        const isFull = (used + (b.reservedStorageBytes || 0)) >= quota;
+        const isCurrentDestination = currentTarget ? currentTarget.id === b.id : false;
+
+        return {
+          ...b,
+          logicalQuotaBytes: quota,
+          availableStorageBytes: avail,
+          usagePercent,
+          isFull,
+          isCurrentDestination
+        };
+      })
+      .sort((a, b) => a.priority - b.priority);
   }
 
   public getBuckets(): IStorageBucket[] {
-    return Array.from(this.db.storageBuckets.values()).sort((a, b) => a.priority - b.priority);
+    const currentTarget = this.storageManager.getCurrentUploadDestination();
+    return Array.from(this.db.storageBuckets.values())
+      .map((b) => {
+        const quota = b.logicalQuotaBytes || DEFAULT_LOGICAL_QUOTA_BYTES;
+        const used = b.usedStorageBytes || 0;
+        const avail = Math.max(0, quota - (used + (b.reservedStorageBytes || 0)));
+        const usagePercent = Math.min(100, Number(((used / quota) * 100).toFixed(1)));
+        const isFull = (used + (b.reservedStorageBytes || 0)) >= quota;
+        const isCurrentDestination = currentTarget ? currentTarget.id === b.id : false;
+
+        return {
+          ...b,
+          logicalQuotaBytes: quota,
+          availableStorageBytes: avail,
+          usagePercent,
+          isFull,
+          isCurrentDestination
+        };
+      })
+      .sort((a, b) => a.priority - b.priority);
   }
 
   public addBucket(dto: CreateStorageBucketDto): IStorageBucket {
-    const quota = dto.logicalQuotaBytes || (dto as any).quotaBytes || DEFAULT_LOGICAL_QUOTA_BYTES;
+    const quota = DEFAULT_LOGICAL_QUOTA_BYTES; // Strictly 8 GiB quota per bucket
     const bucketName = (dto.bucketName || (dto as any).name || '').trim().toLowerCase();
     const storageAccountId = dto.storageAccountId || (dto as any).accountId || 'b0000000-0000-0000-0000-000000000001';
 
-    // Check if account already has a bucket assigned
-    const existingForAccount = Array.from(this.db.storageBuckets.values()).find(
-      (b) => b.storageAccountId === storageAccountId
+    // Check if bucket with this exact name already exists
+    const existingByName = Array.from(this.db.storageBuckets.values()).find(
+      (b) => b.bucketName.toLowerCase() === bucketName
     );
 
-    if (existingForAccount) {
-      // Strictly maintain 1 R2 bucket per account: update / replace the bucket name and priority!
-      existingForAccount.bucketName = bucketName;
-      existingForAccount.logicalQuotaBytes = quota;
-      existingForAccount.priority = dto.priority || existingForAccount.priority;
-      existingForAccount.updatedAt = new Date();
+    if (existingByName) {
+      existingByName.priority = dto.priority || existingByName.priority;
+      existingByName.logicalQuotaBytes = quota;
+      existingByName.storageAccountId = storageAccountId;
+      existingByName.updatedAt = new Date();
 
       if (this.db.pgPool) {
         this.db.pgPool.query(
-          `UPDATE storage_buckets SET bucket_name = $1, logical_quota_bytes = $2, priority = $3, updated_at = NOW() WHERE id::text = $4 OR storage_account_id::text = $5;`,
-          [bucketName, quota, existingForAccount.priority, existingForAccount.id, storageAccountId]
+          `UPDATE storage_buckets SET logical_quota_bytes = $1, priority = $2, storage_account_id = $3, updated_at = NOW() WHERE id::text = $4 OR bucket_name = $5;`,
+          [quota, existingByName.priority, storageAccountId, existingByName.id, bucketName]
         ).catch((err: any) => console.warn('[POSTGRES] update existing bucket notice:', err.message));
       }
 
-      console.log(`[STORAGE] Account "${storageAccountId}" bucket updated to "${bucketName}" (8 GiB quota).`);
-      return existingForAccount;
+      console.log(`[STORAGE] Bucket "${bucketName}" updated (8 GiB quota, priority: ${existingByName.priority}).`);
+      return existingByName;
     }
 
-    const id = (dto as any).id || (storageAccountId && typeof storageAccountId === 'string' && storageAccountId.startsWith('b0000000-')
-      ? 'c' + storageAccountId.slice(1)
-      : 'c0000000-0000-0000-0000-' + String(Date.now()).slice(-12).padStart(12, '0'));
+    const id = (dto as any).id || crypto.randomUUID();
 
     const newBucket: IStorageBucket = {
       id,
@@ -263,14 +312,14 @@ export class AdminService {
         ? storageAccountId
         : 'b0000000-0000-0000-0000-000000000001';
       this.db.pgPool.query(
-        `INSERT INTO storage_buckets (id, storage_account_id, bucket_name, region, logical_quota_bytes, used_storage_bytes, reserved_storage_bytes, priority, health_status, is_enabled, object_count)
-         VALUES ($1, $2, $3, $4, $5, 0, 0, $6, 'HEALTHY', true, 0)
+        `INSERT INTO storage_buckets (id, storage_account_id, bucket_name, region, logical_quota_bytes, used_storage_bytes, reserved_storage_bytes, priority, health_status, is_enabled, object_count, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 0, 0, $6, 'HEALTHY', true, 0, NOW(), NOW())
          ON CONFLICT (id) DO UPDATE SET bucket_name = EXCLUDED.bucket_name, logical_quota_bytes = EXCLUDED.logical_quota_bytes, priority = EXCLUDED.priority, updated_at = NOW();`,
         [id, pgAccountId, bucketName, dto.region || 'auto', quota, newBucket.priority]
       ).catch((err: any) => console.warn('[POSTGRES] addBucket sync notice:', err.message));
     }
 
-    console.log(`[STORAGE] New bucket "${bucketName}" registered for account "${storageAccountId}" (8 GiB quota).`);
+    console.log(`[STORAGE] New bucket "${bucketName}" registered (independent 8 GiB quota, priority: ${newBucket.priority}). Total buckets: ${this.db.storageBuckets.size}`);
     return newBucket;
   }
 

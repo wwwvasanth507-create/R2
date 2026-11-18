@@ -45,7 +45,9 @@ export class DynamicBucketAllocationEngine {
    */
   public calculateRemainingCapacity(bucket: IStorageBucket): number {
     const quota = bucket.logicalQuotaBytes || this.defaultQuotaBytes;
-    const consumed = bucket.usedStorageBytes + bucket.reservedStorageBytes;
+    const used = bucket.usedStorageBytes || 0;
+    const reserved = bucket.reservedStorageBytes || 0;
+    const consumed = used + reserved;
     return Math.max(0, quota - consumed);
   }
 
@@ -54,7 +56,9 @@ export class DynamicBucketAllocationEngine {
    */
   public async evaluateBucketThresholds(bucket: IStorageBucket): Promise<BucketHealthStatus> {
     const quota = bucket.logicalQuotaBytes || this.defaultQuotaBytes;
-    const totalCommittedAndReserved = bucket.usedStorageBytes + bucket.reservedStorageBytes;
+    const used = bucket.usedStorageBytes || 0;
+    const reserved = bucket.reservedStorageBytes || 0;
+    const totalCommittedAndReserved = used + reserved;
     const ratio = quota > 0 ? totalCommittedAndReserved / quota : 1.0;
 
     const previousSeverity = this.alertStates.get(bucket.id);
@@ -90,6 +94,7 @@ export class DynamicBucketAllocationEngine {
     }
 
     bucket.healthStatus = newHealthStatus;
+    bucket.availableStorageBytes = Math.max(0, quota - totalCommittedAndReserved);
 
     // Suppress duplicate alerts if severity level hasn't escalated or changed
     if (currentSeverity && currentSeverity !== previousSeverity) {
@@ -127,6 +132,33 @@ export class DynamicBucketAllocationEngine {
         console.error('Failed to dispatch alert notification event:', err);
       }
     }
+  }
+
+  /**
+   * Intelligently selects the highest-priority bucket that has sufficient available space
+   * for a file or chunk of `requiredBytes`.
+   * Automatically skips any bucket that is full (100% / 8 GB reached) or cannot fit the required bytes.
+   */
+  public selectEligibleBucket(
+    eligibleBuckets: IStorageBucket[],
+    requiredBytes: number,
+    excludeBucketIds: string[] = []
+  ): IStorageBucket {
+    const excludeSet = new Set(excludeBucketIds);
+    const sorted = [...eligibleBuckets]
+      .filter((b) => b.isEnabled && !excludeSet.has(b.id))
+      .sort((a, b) => (a.priority || 1) - (b.priority || 1));
+
+    for (const bucket of sorted) {
+      const remaining = this.calculateRemainingCapacity(bucket);
+      if (remaining >= requiredBytes) {
+        return bucket;
+      }
+    }
+
+    throw new Error(
+      `Storage quota exceeded across all connected buckets. Upload size: ${(requiredBytes / (1024 * 1024)).toFixed(1)} MB exceeds available capacity across all ${eligibleBuckets.length} connected R2 buckets (8 GiB per-bucket limit). Please connect an additional R2 bucket.`
+    );
   }
 
   /**

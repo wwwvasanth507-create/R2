@@ -123,11 +123,7 @@ export class UploadService {
     // Commit bucket reservation
     const bucket = this.db.storageBuckets.get(chunk.bucketId);
     if (bucket) {
-      const reservationId = `res-${dto.fileId}-${dto.chunkIndex}`;
-      bucket.reservedStorageBytes = Math.max(0, bucket.reservedStorageBytes - chunk.chunkSizeBytes);
-      bucket.usedStorageBytes += chunk.chunkSizeBytes;
-      bucket.objectCount = (bucket.objectCount || 0) + 1;
-      await this.storageManager.allocationEngine.evaluateBucketThresholds(bucket);
+      await this.storageManager.commitUpload(bucket.id, chunk.chunkSizeBytes);
     }
 
     // Check if all chunks for this file are verified

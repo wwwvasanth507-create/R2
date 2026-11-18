@@ -72,12 +72,14 @@ export class DatabaseService {
   public directMessages: Map<string, IDirectMessage> = new Map();
   public notifications: Map<string, INotification> = new Map();
 
+  public readyPromise: Promise<void> | null = null;
+
   constructor() {
-    this.initPostgresPool();
     this.seedInitialData();
+    this.readyPromise = this.initPostgresPool();
   }
 
-  private initPostgresPool() {
+  private async initPostgresPool(): Promise<void> {
     try {
       this.pgPool = new Pool({
         connectionString: config.databaseUrl,
@@ -88,9 +90,9 @@ export class DatabaseService {
       this.pgPool.on('error', (err) => {
         console.warn('PostgreSQL pool background notice:', err.message);
       });
-      this.loadStorageFromPostgres().catch(console.warn);
-    } catch (err) {
-      console.warn('PostgreSQL pool initialization failed, using in-memory store:', err);
+      await this.loadStorageFromPostgres();
+    } catch (err: any) {
+      console.warn('PostgreSQL pool initialization failed, using in-memory store:', err.message);
     }
   }
 
@@ -119,13 +121,27 @@ export class DatabaseService {
         this.storageAccounts.set(acc.id, acc);
       }
 
-      const bktRes = await this.pgPool.query('SELECT * FROM storage_buckets');
+      const bktRes = await this.pgPool.query('SELECT * FROM storage_buckets ORDER BY priority ASC, created_at ASC');
       if (bktRes.rows.length > 0) {
         this.storageBuckets.clear();
       }
       for (const row of bktRes.rows) {
         const quota = Number(row.logical_quota_bytes || DEFAULT_LOGICAL_QUOTA_BYTES);
         const used = Number(row.used_storage_bytes || 0);
+        const reserved = Number(row.reserved_storage_bytes || 0);
+        const consumed = used + reserved;
+        let healthStatus: BucketHealthStatus = BucketHealthStatus.HEALTHY;
+
+        if (consumed >= quota) {
+          healthStatus = BucketHealthStatus.EXHAUSTED_100;
+        } else if (consumed / quota >= 0.85) {
+          healthStatus = BucketHealthStatus.HIGH_USAGE_85;
+        } else if (consumed / quota >= 0.70) {
+          healthStatus = BucketHealthStatus.WARNING_70;
+        } else {
+          healthStatus = BucketHealthStatus.HEALTHY;
+        }
+
         const bkt: IStorageBucket = {
           id: row.id,
           bucketName: row.bucket_name,
@@ -133,10 +149,10 @@ export class DatabaseService {
           region: row.region || 'auto',
           logicalQuotaBytes: quota,
           usedStorageBytes: used,
-          reservedStorageBytes: Number(row.reserved_storage_bytes || 0),
-          availableStorageBytes: Math.max(0, quota - used),
+          reservedStorageBytes: reserved,
+          availableStorageBytes: Math.max(0, quota - consumed),
           priority: row.priority || 1,
-          healthStatus: (row.health_status as BucketHealthStatus) || BucketHealthStatus.HEALTHY,
+          healthStatus,
           isEnabled: row.is_enabled !== false,
           objectCount: Number(row.object_count || 0),
           createdAt: row.created_at || new Date(),
@@ -303,7 +319,18 @@ export class DatabaseService {
           if (chunkTotalBytes > 0 || chunkCount > 0) {
             bucket.usedStorageBytes = Math.max(bucket.usedStorageBytes, chunkTotalBytes);
             bucket.objectCount = Math.max(bucket.objectCount, chunkCount);
-            bucket.availableStorageBytes = Math.max(0, bucket.logicalQuotaBytes - bucket.usedStorageBytes);
+            const quota = bucket.logicalQuotaBytes || DEFAULT_LOGICAL_QUOTA_BYTES;
+            const consumed = bucket.usedStorageBytes + (bucket.reservedStorageBytes || 0);
+            bucket.availableStorageBytes = Math.max(0, quota - consumed);
+            if (consumed >= quota) {
+              bucket.healthStatus = BucketHealthStatus.EXHAUSTED_100;
+            } else if (consumed / quota >= 0.85) {
+              bucket.healthStatus = BucketHealthStatus.HIGH_USAGE_85;
+            } else if (consumed / quota >= 0.70) {
+              bucket.healthStatus = BucketHealthStatus.WARNING_70;
+            } else {
+              bucket.healthStatus = BucketHealthStatus.HEALTHY;
+            }
             await this.saveBucketToPostgres(bucket);
           }
         }
@@ -457,11 +484,12 @@ export class DatabaseService {
     try {
       await this.pgPool.query(
         `UPDATE storage_buckets
-         SET used_storage_bytes = $1, object_count = $2, updated_at = NOW()
-         WHERE id::text = $3 OR bucket_name = $4`,
+         SET used_storage_bytes = $1, object_count = $2, health_status = $3, updated_at = NOW()
+         WHERE id::text = $4 OR bucket_name = $5`,
         [
           bucket.usedStorageBytes,
           bucket.objectCount || 0,
+          bucket.healthStatus || 'HEALTHY',
           bucket.id,
           bucket.bucketName
         ]

@@ -37,7 +37,12 @@ interface BucketItem {
   account: string;
   quotaGiB: number;
   usedGiB: number;
+  availableGiB: number;
   usedBytes?: number;
+  availableBytes?: number;
+  usagePercent: number;
+  isFull: boolean;
+  isCurrentDestination: boolean;
   objectCount?: number;
   priority: number;
   status: string;
@@ -239,18 +244,36 @@ export default function AdminDashboard() {
         const bData = await bRes.json();
         if (Array.isArray(bData)) {
           // Map backend buckets to frontend items
-          const mapped: BucketItem[] = bData.map((b: any) => ({
-            id: b.id,
-            name: b.bucketName,
-            account: b.storageAccountId || 'Cloudflare R2',
-            quotaGiB: b.logicalQuotaBytes ? b.logicalQuotaBytes / (1024 * 1024 * 1024) : 8,
-            usedGiB: b.usedStorageBytes ? b.usedStorageBytes / (1024 * 1024 * 1024) : 0,
-            usedBytes: b.usedStorageBytes || 0,
-            objectCount: b.objectCount || 0,
-            priority: b.priority || 1,
-            status: b.healthStatus || 'HEALTHY',
-            isEnabled: b.isEnabled !== false
-          }));
+          const mapped: BucketItem[] = bData.map((b: any) => {
+            const quotaBytes = b.logicalQuotaBytes || DEFAULT_LOGICAL_QUOTA_BYTES;
+            const usedBytes = b.usedStorageBytes || 0;
+            const availableBytes = b.availableStorageBytes !== undefined 
+              ? b.availableStorageBytes 
+              : Math.max(0, quotaBytes - usedBytes);
+            const usagePercent = b.usagePercent !== undefined 
+              ? b.usagePercent 
+              : (quotaBytes > 0 ? Math.min(100, Math.round((usedBytes / quotaBytes) * 1000) / 10) : 0);
+            const isFull = b.isFull !== undefined ? b.isFull : (usedBytes >= quotaBytes);
+            const isCurrentDestination = Boolean(b.isCurrentDestination);
+
+            return {
+              id: b.id,
+              name: b.bucketName,
+              account: b.storageAccountId || 'Cloudflare R2',
+              quotaGiB: quotaBytes / (1024 * 1024 * 1024),
+              usedGiB: usedBytes / (1024 * 1024 * 1024),
+              availableGiB: availableBytes / (1024 * 1024 * 1024),
+              usedBytes,
+              availableBytes,
+              usagePercent,
+              isFull,
+              isCurrentDestination,
+              objectCount: b.objectCount || 0,
+              priority: b.priority || 1,
+              status: b.healthStatus || (isFull ? 'EXHAUSTED_100' : 'HEALTHY'),
+              isEnabled: b.isEnabled !== false
+            };
+          });
           setBuckets(mapped);
         }
       }
@@ -1067,22 +1090,45 @@ export default function AdminDashboard() {
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     {buckets.map((b) => {
-                      const pct = Math.round((b.usedGiB / b.quotaGiB) * 100);
+                      const pct = b.usagePercent !== undefined ? b.usagePercent : Math.round((b.usedGiB / b.quotaGiB) * 100);
                       let barColor = '#22c55e';
-                      if (pct >= 85) barColor = '#ef4444';
+                      if (b.isFull || pct >= 95) barColor = '#ef4444';
                       else if (pct >= 70) barColor = '#f59e0b';
 
+                      const usedStr = b.usedGiB >= 0.01 
+                        ? `${b.usedGiB.toFixed(2)} GB` 
+                        : `${((b.usedBytes || 0) / (1024 * 1024)).toFixed(1)} MB`;
+                      const availVal = b.availableGiB !== undefined ? b.availableGiB : Math.max(0, b.quotaGiB - b.usedGiB);
+                      const availStr = availVal >= 0.01
+                        ? `${availVal.toFixed(2)} GB`
+                        : `${((b.availableBytes !== undefined ? b.availableBytes : 0) / (1024 * 1024)).toFixed(1)} MB`;
+
                       return (
-                        <div key={b.id} style={{ background: '#0d111a', padding: '16px', borderRadius: '10px', border: '1px solid #1e293b' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                            <div>
-                              <span style={{ fontWeight: 700, color: '#fff', fontSize: '14px' }}>{b.name}</span>
-                              <span style={{ fontSize: '12px', color: '#94a3b8', marginLeft: '8px' }}>Priority: #{b.priority}</span>
-                            </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                              <span style={{ fontSize: '13px', color: '#fff', fontWeight: 600 }}>
-                                {b.usedGiB >= 0.01 ? `${b.usedGiB.toFixed(2)} GiB` : `${((b.usedBytes || 0) / (1024 * 1024)).toFixed(1)} MB`} / {b.quotaGiB} GiB ({pct}%) • {b.objectCount || 0} objects
+                        <div key={b.id} style={{ background: '#0d111a', padding: '16px', borderRadius: '10px', border: b.isCurrentDestination ? '1px solid #f97316' : '1px solid #1e293b' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                              <span style={{ fontWeight: 700, color: '#fff', fontSize: '15px' }}>{b.name}</span>
+                              <span style={{ fontSize: '11px', color: '#f97316', background: 'rgba(249,115,22,0.15)', padding: '2px 6px', borderRadius: '4px', fontWeight: 700 }}>
+                                Priority #{b.priority}
                               </span>
+                              {b.isCurrentDestination && (
+                                <span style={{ fontSize: '11px', background: 'rgba(249,115,22,0.25)', border: '1px solid #f97316', color: '#ffedd5', padding: '2px 8px', borderRadius: '12px', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f97316' }}></span>
+                                  CURRENT UPLOAD DESTINATION
+                                </span>
+                              )}
+                              {b.isFull ? (
+                                <span style={{ fontSize: '11px', background: 'rgba(239,68,68,0.2)', border: '1px solid #ef4444', color: '#f87171', padding: '2px 8px', borderRadius: '12px', fontWeight: 700 }}>
+                                  FULL (100%)
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: '11px', background: 'rgba(34,197,94,0.2)', border: '1px solid #22c55e', color: '#4ade80', padding: '2px 8px', borderRadius: '12px', fontWeight: 700 }}>
+                                  AVAILABLE
+                                </span>
+                              )}
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                               <button
                                 onClick={() => handleDeleteBucket(b.id, b.name)}
                                 title="Delete Bucket"
@@ -1104,8 +1150,32 @@ export default function AdminDashboard() {
                               </button>
                             </div>
                           </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '10px', background: 'rgba(15, 23, 42, 0.6)', padding: '10px 12px', borderRadius: '8px', marginBottom: '10px', fontSize: '12px' }}>
+                            <div>
+                              <div style={{ color: '#94a3b8', fontSize: '11px' }}>Capacity</div>
+                              <div style={{ color: '#fff', fontWeight: 600 }}>8.00 GB</div>
+                            </div>
+                            <div>
+                              <div style={{ color: '#94a3b8', fontSize: '11px' }}>Used Storage</div>
+                              <div style={{ color: '#fff', fontWeight: 600 }}>{usedStr}</div>
+                            </div>
+                            <div>
+                              <div style={{ color: '#94a3b8', fontSize: '11px' }}>Available</div>
+                              <div style={{ color: b.isFull ? '#ef4444' : '#10b981', fontWeight: 600 }}>{availStr}</div>
+                            </div>
+                            <div>
+                              <div style={{ color: '#94a3b8', fontSize: '11px' }}>Usage %</div>
+                              <div style={{ color: pct >= 95 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#22c55e', fontWeight: 600 }}>{pct}%</div>
+                            </div>
+                            <div>
+                              <div style={{ color: '#94a3b8', fontSize: '11px' }}>Stored Objects</div>
+                              <div style={{ color: '#fff', fontWeight: 600 }}>{b.objectCount || 0} objects</div>
+                            </div>
+                          </div>
+
                           <div style={{ height: '6px', background: '#1e293b', borderRadius: '3px', overflow: 'hidden' }}>
-                            <div style={{ width: `${pct}%`, height: '100%', background: barColor }} />
+                            <div style={{ width: `${Math.min(100, pct)}%`, height: '100%', background: barColor, transition: 'width 0.3s ease' }} />
                           </div>
                         </div>
                       );
@@ -1180,63 +1250,95 @@ export default function AdminDashboard() {
                         <th style={{ padding: '14px 16px' }}>Account</th>
                         <th style={{ padding: '14px 16px' }}>Logical Quota</th>
                         <th style={{ padding: '14px 16px' }}>Used Storage</th>
-                        <th style={{ padding: '14px 16px' }}>Health Status</th>
-                        <th style={{ padding: '14px 16px' }}>Allocation Status</th>
+                        <th style={{ padding: '14px 16px' }}>Available</th>
+                        <th style={{ padding: '14px 16px' }}>Usage %</th>
+                        <th style={{ padding: '14px 16px' }}>Objects</th>
+                        <th style={{ padding: '14px 16px' }}>Upload Target</th>
+                        <th style={{ padding: '14px 16px' }}>Status</th>
+                        <th style={{ padding: '14px 16px' }}>State</th>
                         <th style={{ padding: '14px 16px', textAlign: 'right' }}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {buckets.map((b) => (
-                        <tr key={b.id} style={{ borderBottom: '1px solid #1e293b', color: '#e2e8f0' }}>
-                          <td style={{ padding: '14px 16px', fontWeight: 700, color: '#f97316' }}>#{b.priority}</td>
-                          <td style={{ padding: '14px 16px', fontWeight: 600 }}>{b.name}</td>
-                          <td style={{ padding: '14px 16px', color: '#94a3b8' }}>{b.account}</td>
-                          <td style={{ padding: '14px 16px' }}>{b.quotaGiB} GiB (Application Standard)</td>
-                          <td style={{ padding: '14px 16px' }}>
-                            {b.usedGiB >= 0.01 ? `${b.usedGiB.toFixed(2)} GiB` : `${((b.usedBytes || 0) / (1024 * 1024)).toFixed(1)} MB`} ({b.objectCount || 0} objects)
-                          </td>
-                          <td style={{ padding: '14px 16px' }}>
-                            <span
-                              style={{
-                                fontSize: '11px',
-                                fontWeight: 700,
-                                padding: '2px 8px',
-                                borderRadius: '4px',
-                                background: b.status === 'WARNING_70' ? 'rgba(245,158,11,0.2)' : 'rgba(34,197,94,0.2)',
-                                color: b.status === 'WARNING_70' ? '#f59e0b' : '#22c55e'
-                              }}
-                            >
-                              {b.status}
-                            </span>
-                          </td>
-                          <td style={{ padding: '14px 16px' }}>
-                            <span style={{ color: b.isEnabled ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
-                              {b.isEnabled ? 'Active' : 'Disabled'}
-                            </span>
-                          </td>
-                          <td style={{ padding: '14px 16px', textAlign: 'right' }}>
-                            <button
-                              onClick={() => handleDeleteBucket(b.id, b.name)}
-                              style={{
-                                padding: '6px 12px',
-                                background: 'rgba(239, 68, 68, 0.15)',
-                                border: '1px solid #ef4444',
-                                color: '#f87171',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                                fontWeight: 600,
-                                cursor: 'pointer',
-                                display: 'inline-flex',
-                                alignItems: 'center',
-                                gap: '6px'
-                              }}
-                            >
-                              <Trash2 size={13} />
-                              <span>Delete Bucket</span>
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                      {buckets.map((b) => {
+                        const pct = b.usagePercent !== undefined ? b.usagePercent : Math.round((b.usedGiB / b.quotaGiB) * 100);
+                        const usedStr = b.usedGiB >= 0.01 
+                          ? `${b.usedGiB.toFixed(2)} GB` 
+                          : `${((b.usedBytes || 0) / (1024 * 1024)).toFixed(1)} MB`;
+                        const availVal = b.availableGiB !== undefined ? b.availableGiB : Math.max(0, b.quotaGiB - b.usedGiB);
+                        const availStr = availVal >= 0.01
+                          ? `${availVal.toFixed(2)} GB`
+                          : `${((b.availableBytes !== undefined ? b.availableBytes : 0) / (1024 * 1024)).toFixed(1)} MB`;
+
+                        return (
+                          <tr key={b.id} style={{ borderBottom: '1px solid #1e293b', color: '#e2e8f0', background: b.isCurrentDestination ? 'rgba(249,115,22,0.04)' : undefined }}>
+                            <td style={{ padding: '14px 16px', fontWeight: 700, color: '#f97316' }}>#{b.priority}</td>
+                            <td style={{ padding: '14px 16px', fontWeight: 600 }}>{b.name}</td>
+                            <td style={{ padding: '14px 16px', color: '#94a3b8' }}>{b.account}</td>
+                            <td style={{ padding: '14px 16px' }}>8.00 GB</td>
+                            <td style={{ padding: '14px 16px', fontWeight: 600 }}>{usedStr}</td>
+                            <td style={{ padding: '14px 16px', color: b.isFull ? '#ef4444' : '#10b981', fontWeight: 600 }}>{availStr}</td>
+                            <td style={{ padding: '14px 16px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <span>{pct}%</span>
+                                <div style={{ width: '40px', height: '5px', background: '#1e293b', borderRadius: '3px', overflow: 'hidden' }}>
+                                  <div style={{ width: `${Math.min(100, pct)}%`, height: '100%', background: b.isFull || pct >= 95 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#22c55e' }} />
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: '14px 16px', color: '#94a3b8' }}>{b.objectCount || 0}</td>
+                            <td style={{ padding: '14px 16px' }}>
+                              {b.isCurrentDestination ? (
+                                <span style={{ fontSize: '11px', fontWeight: 700, padding: '3px 8px', borderRadius: '4px', background: 'rgba(249,115,22,0.2)', border: '1px solid #f97316', color: '#f97316', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#f97316' }}></span>
+                                  ACTIVE TARGET
+                                </span>
+                              ) : b.isFull ? (
+                                <span style={{ fontSize: '11px', color: '#94a3b8' }}>Bypassed (Full)</span>
+                              ) : (
+                                <span style={{ fontSize: '11px', color: '#94a3b8' }}>Standby (#{b.priority})</span>
+                              )}
+                            </td>
+                            <td style={{ padding: '14px 16px' }}>
+                              {b.isFull ? (
+                                <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', background: 'rgba(239,68,68,0.2)', border: '1px solid #ef4444', color: '#f87171' }}>
+                                  FULL (100%)
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '4px', background: 'rgba(34,197,94,0.2)', border: '1px solid #22c55e', color: '#4ade80' }}>
+                                  AVAILABLE
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ padding: '14px 16px' }}>
+                              <span style={{ color: b.isEnabled ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
+                                {b.isEnabled ? 'Active' : 'Disabled'}
+                              </span>
+                            </td>
+                            <td style={{ padding: '14px 16px', textAlign: 'right' }}>
+                              <button
+                                onClick={() => handleDeleteBucket(b.id, b.name)}
+                                style={{
+                                  padding: '6px 12px',
+                                  background: 'rgba(239, 68, 68, 0.15)',
+                                  border: '1px solid #ef4444',
+                                  color: '#f87171',
+                                  borderRadius: '6px',
+                                  fontSize: '12px',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '6px'
+                                }}
+                              >
+                                <Trash2 size={13} />
+                                <span>Delete</span>
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1657,7 +1759,7 @@ export default function AdminDashboard() {
         >
           <div style={{ background: '#111827', border: '1px solid #1e293b', borderRadius: '16px', padding: '28px', width: '460px' }}>
             <h3 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: 700, color: '#fff' }}>
-              Register R2 Bucket (1 Per Cloudflare Account)
+              Register Cloudflare R2 Bucket
             </h3>
             <form onSubmit={handleAddBucket}>
               <div style={{ marginBottom: '16px' }}>
@@ -1670,18 +1772,18 @@ export default function AdminDashboard() {
                   required
                   style={{ width: '100%', padding: '10px', background: '#0d111a', border: '1px solid #334155', borderRadius: '8px', color: '#fff', boxSizing: 'border-box' }}
                 >
-                  <option value="">Select Cloudflare Account (1 bucket per account limit)</option>
+                  <option value="">Select Cloudflare Account</option>
                   {accounts.map(acc => {
-                    const hasBkt = buckets.find(b => b.account === acc.id || b.account === acc.displayName);
+                    const count = buckets.filter(b => b.account === acc.id || b.account === acc.displayName).length;
                     return (
                       <option key={acc.id} value={acc.id}>
-                        {acc.displayName} {hasBkt ? `(Current Bucket: ${hasBkt.name} - will update)` : '(Available for 8 GB Bucket)'}
+                        {acc.displayName} ({count > 0 ? `${count} active bucket${count > 1 ? 's' : ''}` : 'No buckets yet'})
                       </option>
                     );
                   })}
                 </select>
-                <span style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px', display: 'block' }}>
-                  Rule: Exactly one 8 GB R2 bucket is allowed per Cloudflare account.
+                <span style={{ fontSize: '11px', color: '#10b981', marginTop: '4px', display: 'block' }}>
+                  Each bucket gets an independent 8 GB logical quota with automatic priority failover.
                 </span>
               </div>
               <div style={{ marginBottom: '16px' }}>

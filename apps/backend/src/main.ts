@@ -520,84 +520,76 @@ app.post('/api/videos/upload', async (req: Request, res: Response) => {
     const mimeType = (req.headers['content-type'] as string) || 'video/mp4';
     const contentLength = Number(req.headers['content-length'] || 0);
 
-    // Ensure active bucket with strictly 8 GiB logical quota
-    let eligibleBuckets = storageManager.getEligibleBuckets();
-    if (eligibleBuckets.length === 0) {
-      const defaultBucket: IStorageBucket = {
-        id: 'c0000000-0000-0000-0000-000000000001',
-        bucketName: 'wavemusic-r2-media-1',
-        storageAccountId: 'acc-cloudflare-alpha',
-        region: 'auto',
-        logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
-        usedStorageBytes: 0,
-        reservedStorageBytes: 0,
-        availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
-        priority: 1,
-        healthStatus: BucketHealthStatus.HEALTHY,
-        isEnabled: true,
-        objectCount: 0,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      };
-      db.storageBuckets.set(defaultBucket.id, defaultBucket);
-      eligibleBuckets = [defaultBucket];
+    // Collect stream payload to ensure integrity, accurate sizing, and atomic multi-bucket failover
+    const streamChunks: Buffer[] = [];
+    const hash = crypto.createHash('sha256');
+    for await (const chunk of req) {
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      streamChunks.push(buf);
+      hash.update(buf);
+    }
+    const fileBuffer = Buffer.concat(streamChunks);
+    const finalSize = fileBuffer.length > 0 ? fileBuffer.length : contentLength;
+    const checksum = hash.digest('hex');
+
+    if (finalSize === 0) {
+      return res.status(400).json({ error: 'Uploaded video payload is empty.' });
     }
 
-    // Select target bucket with available quota
-    let targetBucket = eligibleBuckets.find((b) => {
-      const avail = b.logicalQuotaBytes - (b.usedStorageBytes + b.reservedStorageBytes);
-      return contentLength <= 0 || avail >= contentLength;
-    });
+    // Dynamic Multi-Bucket Selection & Automatic Failover Engine
+    const triedBucketIds: string[] = [];
+    let targetBucket: IStorageBucket | null = null;
+    let uploadSuccess = false;
+    let lastUploadError: any = null;
+    const fileId = crypto.randomUUID();
+    const objectKey = `videos/${fileId}/${sanitizedFilename}`;
 
-    if (!targetBucket) {
-      targetBucket = eligibleBuckets[0];
+    while (!uploadSuccess) {
+      try {
+        targetBucket = storageManager.selectBucketForUpload(finalSize, triedBucketIds);
+      } catch (quotaErr: any) {
+        return res.status(400).json({
+          error: quotaErr.message || `Storage quota exceeded across all connected buckets (8 GiB limit per bucket).`
+        });
+      }
+
+      triedBucketIds.push(targetBucket.id);
+      await storageManager.reserveCapacity(targetBucket.id, finalSize);
+
+      try {
+        const provider = storageManager.getProvider(targetBucket.storageAccountId);
+        await provider.putObject(
+          targetBucket.bucketName,
+          objectKey,
+          fileBuffer,
+          mimeType,
+          {
+            originalFilename: rawFilename,
+            title,
+            ownerId: userId,
+            uploadedAt: new Date().toISOString(),
+            contentLength: String(finalSize)
+          }
+        );
+
+        // Upload to Cloudflare R2 succeeded! Atomically commit storage reservation
+        await storageManager.commitUpload(targetBucket.id, finalSize);
+        uploadSuccess = true;
+      } catch (uploadErr: any) {
+        console.warn(`[UPLOAD FAILOVER] Upload to bucket "${targetBucket.bucketName}" failed:`, uploadErr.message);
+        lastUploadError = uploadErr;
+        // Release capacity on the failed bucket and automatically retry with next eligible bucket
+        await storageManager.releaseCapacity(targetBucket.id, finalSize);
+      }
     }
 
-    // Quota validation
-    const availableQuota = targetBucket.logicalQuotaBytes - (targetBucket.usedStorageBytes + targetBucket.reservedStorageBytes);
-    if (contentLength > 0 && contentLength > availableQuota) {
-      return res.status(400).json({
-        error: `Storage bucket quota (8 GiB) exceeded for bucket "${targetBucket.bucketName}". Available: ${(availableQuota / (1024 * 1024)).toFixed(1)} MiB, upload size: ${(contentLength / (1024 * 1024)).toFixed(1)} MiB.`
+    if (!uploadSuccess || !targetBucket) {
+      return res.status(500).json({
+        error: `Upload failed across all eligible R2 buckets: ${lastUploadError?.message || 'Unknown error'}`
       });
     }
 
-    const fileId = crypto.randomUUID();
-    const objectKey = `videos/${fileId}/${sanitizedFilename}`;
     const provider = storageManager.getProvider(targetBucket.storageAccountId);
-
-    // Stream upload directly to bucket and calculate SHA-256 on the fly
-    const hash = crypto.createHash('sha256');
-    let totalBytesReceived = 0;
-    const pass = new PassThrough();
-
-    req.on('data', (chunk: Buffer) => {
-      hash.update(chunk);
-      totalBytesReceived += chunk.length;
-    });
-
-    req.pipe(pass);
-
-    await provider.putObject(
-      targetBucket.bucketName,
-      objectKey,
-      pass,
-      mimeType,
-      {
-        originalFilename: rawFilename,
-        title,
-        ownerId: userId,
-        uploadedAt: new Date().toISOString(),
-        ...(contentLength > 0 ? { contentLength: String(contentLength) } : {})
-      }
-    );
-
-    const checksum = hash.digest('hex');
-    const finalSize = totalBytesReceived > 0 ? totalBytesReceived : contentLength;
-
-    // Update bucket quota usage
-    targetBucket.usedStorageBytes += finalSize;
-    targetBucket.objectCount = (targetBucket.objectCount || 0) + 1;
-    targetBucket.availableStorageBytes = Math.max(0, targetBucket.logicalQuotaBytes - (targetBucket.usedStorageBytes + targetBucket.reservedStorageBytes));
     await storageManager.allocationEngine.evaluateBucketThresholds(targetBucket);
 
     // Handle thumbnail if sent as base64 data URL
@@ -794,14 +786,6 @@ app.post('/api/videos/upload-thumbnail', async (req: Request, res: Response) => 
 
     const authUser = getAuthUser(req);
     const userId = authUser ? authUser.sub : 'user-admin-1';
-    const eligibleBuckets = storageManager.getEligibleBuckets();
-    const targetBucket = eligibleBuckets[0] || db.storageBuckets.values().next().value;
-    if (!targetBucket) {
-      return res.status(400).json({ error: 'No active storage bucket' });
-    }
-    const thumbId = crypto.randomUUID();
-    const objectKey = `thumbnails/${thumbId}.jpg`;
-    const provider = storageManager.getProvider(targetBucket.storageAccountId);
 
     let thumbBuffer: Buffer;
     let contentType = (req.headers['content-type'] as string) || 'image/jpeg';
@@ -826,7 +810,14 @@ app.post('/api/videos/upload-thumbnail', async (req: Request, res: Response) => 
       return res.status(400).json({ error: 'Empty thumbnail data' });
     }
 
+    // Automatically select the active bucket with available capacity
+    const targetBucket = storageManager.selectBucketForUpload(thumbBuffer.length);
+    const thumbId = crypto.randomUUID();
+    const objectKey = `thumbnails/${thumbId}.jpg`;
+    const provider = storageManager.getProvider(targetBucket.storageAccountId);
+
     await provider.putObject(targetBucket.bucketName, objectKey, thumbBuffer, contentType);
+    await storageManager.commitUpload(targetBucket.id, thumbBuffer.length);
 
     const fileId = `thumb-${thumbId}`;
     const thumbChunk = {
@@ -909,127 +900,110 @@ app.post('/api/videos/chunked/init', async (req: Request, res: Response) => {
     const chunkSizeBytes = Number(reqChunkSizeBytes) || (95 * 1024 * 1024); // 95 MB (~99.6 MB safe chunk size under Cloudflare 100 MB proxy limit)
     const chunkCount = Number(reqChunkCount) || Math.ceil(parsedTotalSizeBytes / chunkSizeBytes);
 
-    // Get active bucket(s)
+    // Get active bucket(s) with live quota verification
     let eligibleBuckets = storageManager.getEligibleBuckets();
     if (eligibleBuckets.length === 0) {
-      const defaultBucket: IStorageBucket = {
-        id: 'c0000000-0000-0000-0000-000000000001',
-        bucketName: 'vasanth01-r2',
-        storageAccountId: 'b0000000-0000-0000-0000-794756325126',
-        region: 'auto',
-        logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
-        usedStorageBytes: 0,
-        reservedStorageBytes: 0,
-        availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
-        priority: 1,
-        healthStatus: BucketHealthStatus.HEALTHY,
-        isEnabled: true,
-        objectCount: 0,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      };
-      db.storageBuckets.set(defaultBucket.id, defaultBucket);
-      eligibleBuckets = [defaultBucket];
+      return res.status(400).json({ error: 'No active storage buckets are configured.' });
     }
 
-    // Check remaining quota across buckets
-    let totalAvail = eligibleBuckets.reduce(
-      (acc, b) => acc + Math.max(0, b.logicalQuotaBytes - (b.usedStorageBytes + b.reservedStorageBytes)),
+    // Check remaining quota across all connected buckets
+    const totalAvail = eligibleBuckets.reduce(
+      (acc, b) => acc + Math.max(0, b.logicalQuotaBytes - (b.usedStorageBytes + (b.reservedStorageBytes || 0))),
       0
     );
 
-    // If large video (e.g. 20 GB to 50 GB) exceeds available space,
-    // dynamically auto-provision sequential 8 GiB bucket partitions under Cloudflare account!
-    const activeAccount = db.storageAccounts.values().next().value;
-    if (parsedTotalSizeBytes > totalAvail && activeAccount) {
-      const neededBytes = parsedTotalSizeBytes - totalAvail;
-      const additionalBucketsNeeded = Math.ceil(neededBytes / DEFAULT_LOGICAL_QUOTA_BYTES);
-      const provider = storageManager.getProvider(activeAccount.id);
-
-      console.log(`[STORAGE ALLOCATION] Large video (${(parsedTotalSizeBytes / (1024 * 1024 * 1024)).toFixed(1)} GB) dynamically allocating ${additionalBucketsNeeded} new 8 GiB bucket partition(s)...`);
-
-      for (let b = 1; b <= additionalBucketsNeeded; b++) {
-        const nextBucketNum = eligibleBuckets.length + 1;
-        const newBucketName = `vasanth${String(nextBucketNum).padStart(2, '0')}-r2`;
-
-        // Create bucket on Cloudflare R2 if it doesn't already exist
-        try {
-          if ((provider as any).client) {
-            const { CreateBucketCommand } = require('@aws-sdk/client-s3');
-            await (provider as any).client.send(new CreateBucketCommand({ Bucket: newBucketName }));
-            console.log(`[STORAGE ALLOCATION] Provisioned Cloudflare R2 bucket: "${newBucketName}"`);
-          }
-        } catch (bktErr: any) {
-          console.warn(`[STORAGE ALLOCATION] Bucket ${newBucketName} notice:`, bktErr.message);
-        }
-
-        const newBucket: IStorageBucket = {
-          id: crypto.randomUUID(),
-          bucketName: newBucketName,
-          storageAccountId: activeAccount.id,
-          region: 'auto',
-          logicalQuotaBytes: DEFAULT_LOGICAL_QUOTA_BYTES, // Strictly 8 GiB quota per bucket
-          usedStorageBytes: 0,
-          reservedStorageBytes: 0,
-          availableStorageBytes: DEFAULT_LOGICAL_QUOTA_BYTES,
-          priority: nextBucketNum,
-          healthStatus: BucketHealthStatus.HEALTHY,
-          isEnabled: true,
-          objectCount: 0,
-          createdAt: new Date(),
-          updatedAt: new Date()
-        };
-
-        db.storageBuckets.set(newBucket.id, newBucket);
-        await db.saveBucketToPostgres(newBucket);
-        eligibleBuckets.push(newBucket);
-        totalAvail += DEFAULT_LOGICAL_QUOTA_BYTES;
-      }
-    }
-
     if (parsedTotalSizeBytes > totalAvail) {
       return res.status(400).json({
-        error: `Storage capacity exceeded. Required: ${(parsedTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB, Available across active buckets: ${(totalAvail / (1024 * 1024)).toFixed(1)} MB.`
+        error: `Storage capacity exceeded across all connected buckets. Required: ${(parsedTotalSizeBytes / (1024 * 1024)).toFixed(1)} MB, Available across all ${eligibleBuckets.length} connected R2 buckets: ${(totalAvail / (1024 * 1024)).toFixed(1)} MB (8 GiB limit per bucket). Please connect an additional R2 bucket in the Admin Dashboard.`
       });
     }
 
     const fileId = crypto.randomUUID();
     const rawFilename = filename || 'video.mp4';
-
-    // Allocate 250 MB chunks sequentially across buckets
     const chunks: IFileChunkManifest[] = [];
-    let bucketIdx = 0;
-    let targetBucket = eligibleBuckets[bucketIdx];
 
-    for (let i = 0; i < chunkCount; i++) {
-      const byteStart = i * chunkSizeBytes;
-      const byteEnd = Math.min(parsedTotalSizeBytes - 1, byteStart + chunkSizeBytes - 1);
-      const currentChunkSize = byteEnd - byteStart + 1;
+    // Check if the entire video can fit in a single bucket with available space (avoids splitting files unless necessary)
+    const singleFitBucket = eligibleBuckets.find((b) => {
+      const avail = b.logicalQuotaBytes - (b.usedStorageBytes + (b.reservedStorageBytes || 0));
+      return avail >= parsedTotalSizeBytes;
+    });
 
-      // Check remaining space in targetBucket; if exhausted, spill over to next bucket
-      const availInBucket = targetBucket.logicalQuotaBytes - (targetBucket.usedStorageBytes + targetBucket.reservedStorageBytes);
-      if (currentChunkSize > availInBucket && bucketIdx + 1 < eligibleBuckets.length) {
-        bucketIdx++;
-        targetBucket = eligibleBuckets[bucketIdx];
+    if (singleFitBucket) {
+      // Allocate all chunks to this single bucket
+      await storageManager.reserveCapacity(singleFitBucket.id, parsedTotalSizeBytes);
+
+      for (let i = 0; i < chunkCount; i++) {
+        const byteStart = i * chunkSizeBytes;
+        const byteEnd = Math.min(parsedTotalSizeBytes - 1, byteStart + chunkSizeBytes - 1);
+        const currentChunkSize = byteEnd - byteStart + 1;
+        const objectKey = `videos/${fileId}/chunks/chunk_${String(i).padStart(5, '0')}.bin`;
+
+        const chunkManifest: IFileChunkManifest = {
+          id: `chk-${fileId}-${i}`,
+          fileId,
+          chunkIndex: i,
+          byteStart,
+          byteEnd,
+          chunkSizeBytes: currentChunkSize,
+          bucketId: singleFitBucket.id,
+          bucketName: singleFitBucket.bucketName,
+          storageAccountId: singleFitBucket.storageAccountId,
+          objectKey,
+          status: ChunkUploadStatus.PENDING
+        };
+
+        chunks.push(chunkManifest);
+        db.fileChunks.set(chunkManifest.id, chunkManifest);
+      }
+    } else {
+      // Video exceeds individual bucket capacity: allocate chunks sequentially across buckets with available capacity
+      const bucketCapacities = new Map<string, { bucket: IStorageBucket; remaining: number }>();
+      for (const b of eligibleBuckets) {
+        const avail = Math.max(0, b.logicalQuotaBytes - (b.usedStorageBytes + (b.reservedStorageBytes || 0)));
+        bucketCapacities.set(b.id, { bucket: b, remaining: avail });
       }
 
-      const objectKey = `videos/${fileId}/chunks/chunk_${String(i).padStart(5, '0')}.bin`;
-      const chunkManifest: IFileChunkManifest = {
-        id: `chk-${fileId}-${i}`,
-        fileId,
-        chunkIndex: i,
-        byteStart,
-        byteEnd,
-        chunkSizeBytes: currentChunkSize,
-        bucketId: targetBucket.id,
-        bucketName: targetBucket.bucketName,
-        storageAccountId: targetBucket.storageAccountId,
-        objectKey,
-        status: ChunkUploadStatus.PENDING
-      };
+      for (let i = 0; i < chunkCount; i++) {
+        const byteStart = i * chunkSizeBytes;
+        const byteEnd = Math.min(parsedTotalSizeBytes - 1, byteStart + chunkSizeBytes - 1);
+        const currentChunkSize = byteEnd - byteStart + 1;
 
-      chunks.push(chunkManifest);
-      db.fileChunks.set(chunkManifest.id, chunkManifest);
+        let allocatedBucket: IStorageBucket | null = null;
+        for (const b of eligibleBuckets) {
+          const cap = bucketCapacities.get(b.id)!;
+          if (cap.remaining >= currentChunkSize) {
+            allocatedBucket = b;
+            cap.remaining -= currentChunkSize;
+            break;
+          }
+        }
+
+        if (!allocatedBucket) {
+          return res.status(400).json({
+            error: `Storage quota exceeded: Chunk ${i + 1} (${(currentChunkSize / (1024 * 1024)).toFixed(1)} MB) could not fit in any available bucket.`
+          });
+        }
+
+        await storageManager.reserveCapacity(allocatedBucket.id, currentChunkSize);
+
+        const objectKey = `videos/${fileId}/chunks/chunk_${String(i).padStart(5, '0')}.bin`;
+        const chunkManifest: IFileChunkManifest = {
+          id: `chk-${fileId}-${i}`,
+          fileId,
+          chunkIndex: i,
+          byteStart,
+          byteEnd,
+          chunkSizeBytes: currentChunkSize,
+          bucketId: allocatedBucket.id,
+          bucketName: allocatedBucket.bucketName,
+          storageAccountId: allocatedBucket.storageAccountId,
+          objectKey,
+          status: ChunkUploadStatus.PENDING
+        };
+
+        chunks.push(chunkManifest);
+        db.fileChunks.set(chunkManifest.id, chunkManifest);
+      }
     }
 
     // Save File Manifest
@@ -1061,11 +1035,12 @@ app.post('/api/videos/chunked/init', async (req: Request, res: Response) => {
     let finalThumbnailUrl = clientThumbnailUrl;
     if (!finalThumbnailUrl || finalThumbnailUrl.includes('unsplash.com')) {
       try {
+        const thumbBucket = chunks[0] ? (db.storageBuckets.get(chunks[0].bucketId) || eligibleBuckets[0]) : eligibleBuckets[0];
         const svgContent = generateAutoThumbnailSvg(title || rawFilename, category || 'Movies', Number(duration) || 120);
         const thumbBuf = Buffer.from(svgContent, 'utf-8');
         const thumbKey = `thumbnails/${fileId}.svg`;
-        const thumbProvider = storageManager.getProvider(targetBucket.storageAccountId);
-        await thumbProvider.putObject(targetBucket.bucketName, thumbKey, thumbBuf, 'image/svg+xml', {
+        const thumbProvider = storageManager.getProvider(thumbBucket.storageAccountId);
+        await thumbProvider.putObject(thumbBucket.bucketName, thumbKey, thumbBuf, 'image/svg+xml', {
           contentLength: String(thumbBuf.length)
         });
         const thumbFileId = `thumb-${fileId}`;
@@ -1089,9 +1064,9 @@ app.post('/api/videos/chunked/init', async (req: Request, res: Response) => {
             byteStart: 0,
             byteEnd: thumbBuf.length - 1,
             chunkSizeBytes: thumbBuf.length,
-            bucketId: targetBucket.id,
-            bucketName: targetBucket.bucketName,
-            storageAccountId: targetBucket.storageAccountId,
+            bucketId: thumbBucket.id,
+            bucketName: thumbBucket.bucketName,
+            storageAccountId: thumbBucket.storageAccountId,
             objectKey: thumbKey,
             status: ChunkUploadStatus.VERIFIED,
             verifiedAt: new Date()
@@ -1182,12 +1157,10 @@ app.post('/api/videos/chunked/upload-chunk', async (req: Request, res: Response)
     chunk.verifiedAt = new Date();
     db.fileChunks.set(chunk.id, chunk);
 
-    // Update target bucket stats
+    // Commit chunk reservation to confirmed used storage
     const bucket = db.storageBuckets.get(chunk.bucketId);
     if (bucket) {
-      bucket.usedStorageBytes += chunk.chunkSizeBytes;
-      bucket.availableStorageBytes = Math.max(0, bucket.logicalQuotaBytes - bucket.usedStorageBytes);
-      await db.saveBucketToPostgres(bucket);
+      await storageManager.commitUpload(bucket.id, chunk.chunkSizeBytes);
     }
 
     // Persist chunk status to PostgreSQL
@@ -1236,19 +1209,6 @@ app.post('/api/videos/chunked/complete', async (req: Request, res: Response) => 
     if (video) {
       video.masterPlaylistUrl = `/api/files/${fileId}/download`;
       await db.saveVideoToPostgres(video, fileId);
-    }
-
-    // Update real-time storage quota usage across assigned buckets
-    if (file.chunks && file.chunks.length > 0) {
-      for (const chunk of file.chunks) {
-        const b = db.storageBuckets.get(chunk.bucketId) || Array.from(db.storageBuckets.values()).find((x) => x.bucketName === chunk.bucketName);
-        if (b) {
-          b.usedStorageBytes += (chunk.chunkSizeBytes || 0);
-          b.objectCount = (b.objectCount || 0) + 1;
-          b.availableStorageBytes = Math.max(0, b.logicalQuotaBytes - b.usedStorageBytes);
-          await db.saveBucketToPostgres(b);
-        }
-      }
     }
 
     console.log(`[VIDEO CHUNKED COMPLETE] Video "${video?.title || file.originalFilename}" (${file.totalSizeBytes} bytes across ${file.chunkCount} chunks) successfully published and ready for streaming.`);

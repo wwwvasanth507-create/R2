@@ -117,11 +117,90 @@ export class StorageManagerService {
 
   /**
    * Get all active, enabled buckets ordered by allocation priority ASC.
+   * Ensures live availability and health thresholds are accurately evaluated.
    */
   public getEligibleBuckets(): IStorageBucket[] {
-    return Array.from(this.db.storageBuckets.values())
-      .filter((b) => b.isEnabled)
-      .sort((a, b) => a.priority - b.priority);
+    const buckets = Array.from(this.db.storageBuckets.values()).filter((b) => b.isEnabled);
+
+    for (const b of buckets) {
+      const quota = b.logicalQuotaBytes || DEFAULT_LOGICAL_QUOTA_BYTES;
+      const consumed = (b.usedStorageBytes || 0) + (b.reservedStorageBytes || 0);
+      b.availableStorageBytes = Math.max(0, quota - consumed);
+      if (consumed >= quota) {
+        b.healthStatus = BucketHealthStatus.EXHAUSTED_100;
+      } else if (consumed / quota >= 0.85) {
+        b.healthStatus = BucketHealthStatus.HIGH_USAGE_85;
+      } else if (consumed / quota >= 0.70) {
+        b.healthStatus = BucketHealthStatus.WARNING_70;
+      } else {
+        b.healthStatus = BucketHealthStatus.HEALTHY;
+      }
+    }
+
+    return buckets.sort((a, b) => (a.priority || 1) - (b.priority || 1));
+  }
+
+  /**
+   * Automatically selects the highest-priority bucket with sufficient available space
+   * for an upload of `requiredBytes`.
+   * Skips full buckets (100% capacity / 8 GB reached) and buckets that cannot fit the payload.
+   */
+  public selectBucketForUpload(requiredBytes: number, excludeBucketIds: string[] = []): IStorageBucket {
+    const eligible = this.getEligibleBuckets();
+    return this.allocationEngine.selectEligibleBucket(eligible, requiredBytes, excludeBucketIds);
+  }
+
+  /**
+   * Identifies the current active destination bucket where new uploads will be placed.
+   * Returns the highest-priority enabled bucket with available capacity > 0.
+   */
+  public getCurrentUploadDestination(): IStorageBucket | null {
+    const eligible = this.getEligibleBuckets();
+    for (const b of eligible) {
+      if (b.availableStorageBytes > 0 && b.healthStatus !== BucketHealthStatus.EXHAUSTED_100) {
+        return b;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Atomically reserves storage capacity on a bucket before starting an upload.
+   */
+  public async reserveCapacity(bucketId: string, bytes: number): Promise<void> {
+    const bucket = this.db.storageBuckets.get(bucketId);
+    if (!bucket) return;
+    bucket.reservedStorageBytes = (bucket.reservedStorageBytes || 0) + bytes;
+    bucket.availableStorageBytes = Math.max(0, bucket.logicalQuotaBytes - (bucket.usedStorageBytes + bucket.reservedStorageBytes));
+    await this.allocationEngine.evaluateBucketThresholds(bucket);
+    await this.db.saveBucketToPostgres(bucket);
+  }
+
+  /**
+   * Commits upload capacity upon successful upload completion to R2.
+   * Decrements reservedStorageBytes and increments usedStorageBytes and objectCount.
+   */
+  public async commitUpload(bucketId: string, bytes: number): Promise<void> {
+    const bucket = this.db.storageBuckets.get(bucketId);
+    if (!bucket) return;
+    bucket.reservedStorageBytes = Math.max(0, (bucket.reservedStorageBytes || 0) - bytes);
+    bucket.usedStorageBytes = (bucket.usedStorageBytes || 0) + bytes;
+    bucket.objectCount = (bucket.objectCount || 0) + 1;
+    bucket.availableStorageBytes = Math.max(0, bucket.logicalQuotaBytes - (bucket.usedStorageBytes + bucket.reservedStorageBytes));
+    await this.allocationEngine.evaluateBucketThresholds(bucket);
+    await this.db.saveBucketToPostgres(bucket);
+  }
+
+  /**
+   * Releases reserved storage capacity if an upload fails or is aborted.
+   */
+  public async releaseCapacity(bucketId: string, bytes: number): Promise<void> {
+    const bucket = this.db.storageBuckets.get(bucketId);
+    if (!bucket) return;
+    bucket.reservedStorageBytes = Math.max(0, (bucket.reservedStorageBytes || 0) - bytes);
+    bucket.availableStorageBytes = Math.max(0, bucket.logicalQuotaBytes - (bucket.usedStorageBytes + bucket.reservedStorageBytes));
+    await this.allocationEngine.evaluateBucketThresholds(bucket);
+    await this.db.saveBucketToPostgres(bucket);
   }
 
   /**
@@ -140,6 +219,7 @@ export class StorageManagerService {
 
     const totalAllocated = totalUsedBytes + totalReservedBytes;
     const totalAvailable = Math.max(0, totalQuotaBytes - totalAllocated);
+    const currentDest = this.getCurrentUploadDestination();
 
     // Free Tier calculation (10 GB free allowance per standard account)
     const totalGBStored = totalUsedBytes / BYTES_PER_GIB;
@@ -158,7 +238,9 @@ export class StorageManagerService {
       freeTierSavingsUsd: parseFloat(freeTierSavingsUsd.toFixed(2)),
       accountsCount: this.db.storageAccounts.size,
       bucketsCount: this.db.storageBuckets.size,
-      activeAlertsCount: Array.from(this.db.storageAlerts.values()).filter((a) => !a.isResolved).length
+      activeAlertsCount: Array.from(this.db.storageAlerts.values()).filter((a) => !a.isResolved).length,
+      currentUploadDestination: currentDest ? currentDest.bucketName : 'None (All Buckets Full)',
+      currentUploadDestinationId: currentDest ? currentDest.id : null
     };
   }
 }
